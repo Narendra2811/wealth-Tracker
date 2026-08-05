@@ -1,0 +1,20 @@
+{
+  "id": "./index.html",
+  "name": "Hisaab — your money, at a glance",
+  "short_name": "Hisaab",
+  "description": "A calm, visual way to see where your money goes. Works offline, stores nothing anywhere but your device.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#F4F1EB",
+  "theme_color": "#F4F1EB",
+  "categories": ["finance", "productivity", "utilities"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

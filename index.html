@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-theme="auto" data-size="md">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<title>Hisaab — your money, at a glance</title>
+<!-- Nothing is loaded from anywhere but this origin, so say so. script-src without
+     'unsafe-inline' means an injected inline handler cannot run even if one ever
+     slips through escaping again. style-src needs 'unsafe-inline' because category
+     colours and bar widths are set as inline style attributes. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="description" content="A calm, visual way to see where your money goes.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F3EE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F0E0D" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Hisaab">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="ambient" aria-hidden="true">
+  <span class="ambient__a"></span>
+  <span class="ambient__b"></span>
+  <span class="ambient__grain"></span>
+</div>
+
+<!-- ============ icon sprite ============ -->
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <g id="ic-base" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+
+  <!-- category icons -->
+  <symbol id="i-food" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.2 11.3h17.6a8.8 8.8 0 0 1-8.8 8.8 8.8 8.8 0 0 1-8.8-8.8Z"/>
+    <path d="M9.1 4.1c0 1.35.95 1.35.95 2.7"/>
+    <path d="M13.7 3.5c0 1.5 1 1.5 1 3"/>
+  </symbol>
+  <symbol id="i-grocery" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 8.9h18l-1.8 9.5a2 2 0 0 1-2 1.6H6.8a2 2 0 0 1-2-1.6L3 8.9Z"/>
+    <path d="m8.6 8.9 1.6-5M15.4 8.9 13.8 3.9"/>
+    <path d="M9.7 12.5l.5 4M14.3 12.5l-.5 4"/>
+  </symbol>
+  <symbol id="i-transport" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.4 14.2 6 8.9A2.2 2.2 0 0 1 8.1 7.3h7.8a2.2 2.2 0 0 1 2.1 1.6l1.6 5.3"/>
+    <path d="M3.4 14.2h17.2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H3.4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z"/>
+    <circle cx="7.3" cy="16.7" r="1.1"/><circle cx="16.7" cy="16.7" r="1.1"/>
+  </symbol>
+  <symbol id="i-shopping" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.4 7.6h13.2l-1.1 11.9a1.8 1.8 0 0 1-1.8 1.6H8.3a1.8 1.8 0 0 1-1.8-1.6L5.4 7.6Z"/>
+    <path d="M9 7.6V6.1a3 3 0 0 1 6 0v1.5"/>
+  </symbol>
+  <symbol id="i-bills" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3.4h12v17.3l-2.4-1.6-1.9 1.6-1.9-1.6-1.9 1.6-1.9-1.6L6 20.7V3.4Z"/>
+    <path d="M9.2 8.5h5.6M9.2 12.4h5.6"/>
+  </symbol>
+  <symbol id="i-health" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 3.4h4a1.2 1.2 0 0 1 1.2 1.2v3.8H19a1.2 1.2 0 0 1 1.2 1.2v4A1.2 1.2 0 0 1 19 14.8h-3.8v3.8A1.2 1.2 0 0 1 14 19.8h-4a1.2 1.2 0 0 1-1.2-1.2v-3.8H5a1.2 1.2 0 0 1-1.2-1.2v-4A1.2 1.2 0 0 1 5 8.4h3.8V4.6A1.2 1.2 0 0 1 10 3.4Z"/>
+  </symbol>
+  <symbol id="i-fun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.9 8.7A1.6 1.6 0 0 1 4.5 7.1h15A1.6 1.6 0 0 1 21.1 8.7v1.85a1.9 1.9 0 0 0 0 3.8v1.85a1.6 1.6 0 0 1-1.6 1.6h-15a1.6 1.6 0 0 1-1.6-1.6V14.35a1.9 1.9 0 0 0 0-3.8V8.7Z"/>
+    <path d="M14.6 7.6v8.8" stroke-dasharray="2 2.4"/>
+  </symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.4 10.6 12 3.6l8.6 7"/>
+    <path d="M5.7 12.4V19a1.6 1.6 0 0 0 1.6 1.6h9.4a1.6 1.6 0 0 0 1.6-1.6v-6.6"/>
+    <path d="M10 20.6v-5.2h4v5.2"/>
+  </symbol>
+  <symbol id="i-gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.7 9.7h16.6v3.3H3.7z"/>
+    <path d="M5.3 13v6.2a1.6 1.6 0 0 0 1.6 1.6h10.2a1.6 1.6 0 0 0 1.6-1.6V13"/>
+    <path d="M12 9.7v11.1"/>
+    <path d="M12 9.7S10.7 5.3 8.7 5.3a2.2 2.2 0 0 0 0 4.4M12 9.7s1.3-4.4 3.3-4.4a2.2 2.2 0 0 1 0 4.4"/>
+  </symbol>
+  <symbol id="i-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20.4 13 13 20.4a2 2 0 0 1-2.8 0l-6.6-6.6a2 2 0 0 1-.6-1.4V4.8a1.2 1.2 0 0 1 1.2-1.2h7.6a2 2 0 0 1 1.4.6l7 7a2 2 0 0 1 0 2.8Z"/>
+    <circle cx="7.9" cy="7.9" r="1.25"/>
+  </symbol>
+
+  <!-- ui icons -->
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 5.2v13.6M5.2 12h13.6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6.3 6.3 17.7 17.7M17.7 6.3 6.3 17.7"/></symbol>
+  <symbol id="i-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 5 7 7-7 7"/></symbol>
+  <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m5 9.5 7 7 7-7"/></symbol>
+  <symbol id="i-nav-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.4 10.6 12 3.6l8.6 7"/><path d="M5.7 12.4V19a1.6 1.6 0 0 0 1.6 1.6h9.4a1.6 1.6 0 0 0 1.6-1.6v-6.6"/>
+  </symbol>
+  <symbol id="i-nav-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.4 20.4v-6.2M12 20.4V5.1M17.6 20.4v-9.4"/></symbol>
+  <symbol id="i-nav-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.1V12l3.3 2"/></symbol>
+  <symbol id="i-nav-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.8 7.6h8.4M17.6 7.6h2.6M3.8 16.4h3.2M12.4 16.4h7.8"/><circle cx="15" cy="7.6" r="2.5"/><circle cx="9.6" cy="16.4" r="2.5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.9" cy="10.9" r="6.6"/><path d="m15.8 15.8 4.4 4.4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 7h14.8M9.6 7V5.3A1.3 1.3 0 0 1 10.9 4h2.2a1.3 1.3 0 0 1 1.3 1.3V7"/><path d="m6.9 7 .9 12a1.6 1.6 0 0 0 1.6 1.5h5.2a1.6 1.6 0 0 0 1.6-1.5l.9-12"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4.2 19.8.8-3.5L16.2 5.1a1.7 1.7 0 0 1 2.4 0l1.3 1.3a1.7 1.7 0 0 1 0 2.4L8.6 19l-4.4.8Z"/><path d="m14.8 6.5 2.7 2.7"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6.2M6.6 11.6 12 6.2l5.4 5.4"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12.8M6.6 12.4 12 17.8l5.4-5.4"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h10.4a1.6 1.6 0 0 1 1.6 1.6v10.8a1.6 1.6 0 0 1-1.6 1.6H9L2.9 12.9a1.3 1.3 0 0 1 0-1.8L9 5Z"/><path d="m12.6 9.6 4.8 4.8M17.4 9.6l-4.8 4.8"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.6 4.6 4.6L19 6.8"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.7h16v13.1a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6.7Z"/><path d="M8 3.4v5M16 3.4v5M4 11h16"/></symbol>
+  <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.6 12.3 7.5l4.9 1.8-4.9 1.8-1.8 4.9-1.8-4.9L3.8 9.3l4.9-1.8L10.5 2.6Z"/><path d="M18 14.6l.95 2.45L21.4 18l-2.45.95L18 21.4l-.95-2.45L14.6 18l2.45-.95L18 14.6Z"/></symbol>
+  <symbol id="i-trophy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7.6 3.8h8.8v5.4a4.4 4.4 0 0 1-8.8 0V3.8Z"/><path d="M7.6 5.4H5.2a2.3 2.3 0 0 0 2.6 3.4M16.4 5.4h2.4a2.3 2.3 0 0 1-2.6 3.4"/><path d="M12 13.6v3.4M8.6 20.4h6.8a3.4 3.4 0 0 0-3.4-3.4 3.4 3.4 0 0 0-3.4 3.4Z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7.4 10.4 12 15l4.6-4.6M4.6 19.6h14.8"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 8.2A2.2 2.2 0 0 1 5.6 6h11.6a2.2 2.2 0 0 1 2.2 2.2v.9"/><path d="M3.4 8.2v9.6A2.2 2.2 0 0 0 5.6 20h13.2a1.7 1.7 0 0 0 1.7-1.7v-7.5a1.7 1.7 0 0 0-1.7-1.7H5.6"/><circle cx="16.6" cy="14.4" r="1.15"/></symbol>
+  <symbol id="i-leaf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.2 3.8S8.4 3.2 5.4 9.4c-2 4.1.6 8.2.6 8.2s6.2-1 8.8-4.6 5.4-9.2 5.4-9.2Z"/><path d="M6 17.6 13.6 10"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.4 18.4h5.2M10 21.2h4"/><path d="M12 3a5.9 5.9 0 0 1 3.5 10.6c-.6.5-1 1.2-1 1.9v.4h-5v-.4c0-.7-.4-1.4-1-1.9A5.9 5.9 0 0 1 12 3Z"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.4A4 4 0 0 1 8 6.4h9.6M14.6 3.4 17.8 6.4 14.6 9.4"/><path d="M20 13.6a4 4 0 0 1-4 4H6.4M9.4 20.6 6.2 17.6 9.4 14.6"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.1V12l3.3 2"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.6c.5 0 1 .27 1.28.76l7.5 13.1c.57 1-.15 2.24-1.28 2.24H4.5c-1.13 0-1.85-1.24-1.28-2.24l7.5-13.1c.28-.49.78-.76 1.28-.76Z"/>
+    <path d="M12 9.4v4.3"/><circle cx="12" cy="16.7" r=".95" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.2 5 6v5.6c0 4.2 2.9 7.5 7 9.2 4.1-1.7 7-5 7-9.2V6l-7-2.8Z"/>
+    <path d="m9 12 2.2 2.2L15.4 10"/>
+  </symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8s.9 3.1-1.2 5.4C8.4 10.8 6 12.2 6 15.2a6 6 0 0 0 12 0c0-2.4-1.1-4.2-2.4-5.6-.5 1.1-1.3 1.6-1.8 1.6.8-3.4-1.8-8.4-1.8-8.4Z"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="32" height="32"><rect width="32" height="32" rx="10" fill="url(#bg1)"/><defs><linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E7A94C"/><stop offset="1" stop-color="#B0721F"/></linearGradient></defs><text x="16" y="22.6" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-size="17" font-weight="700" fill="#fff">₹</text></svg>
+      </span>
+      <span class="brand__name">Hisaab</span>
+    </div>
+    <div class="topbar__right" id="topbarRight"></div>
+  </header>
+
+  <main class="view" id="view" tabindex="-1"></main>
+
+  <nav class="tabbar" id="tabbar" aria-label="Main">
+    <button class="tab" data-nav="home" aria-current="page"><svg class="ic"><use href="#i-nav-home"/></svg><span>Home</span></button>
+    <button class="tab" data-nav="insights"><svg class="ic"><use href="#i-nav-insights"/></svg><span>Insights</span></button>
+    <span class="tabbar__gap" aria-hidden="true"></span>
+    <button class="tab" data-nav="history"><svg class="ic"><use href="#i-nav-history"/></svg><span>History</span></button>
+    <button class="tab" data-nav="settings"><svg class="ic"><use href="#i-nav-settings"/></svg><span>Settings</span></button>
+    <button class="fab" id="fab" aria-label="Add an expense"><svg class="ic"><use href="#i-plus"/></svg></button>
+  </nav>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Panel" tabindex="-1" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<noscript><p style="padding:24px;font:16px system-ui">Hisaab needs JavaScript to run.</p></noscript>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hisaab — how to use it</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  *{margin:0}
+  :root{
+    --bg:#F4F1EB; --card:#fff; --ink:#191510; --ink2:#5A5145; --ink3:#8C8275;
+    --line:rgba(26,22,17,.10); --gold:#B0721F; --gold2:#8E5A14; --soft:rgba(176,114,31,.10);
+    --green:#2E7D46; --f:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  body{font-family:var(--f);background:var(--bg);color:var(--ink);line-height:1.5;
+       font-size:17px;-webkit-font-smoothing:antialiased;padding:32px 20px 56px}
+  .wrap{max-width:940px;margin:0 auto}
+
+  header{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+  .mark{width:46px;height:46px;border-radius:14px;flex:none;display:grid;place-items:center;
+        background:linear-gradient(150deg,#E7A94C,#A2661A);color:#fff;font-size:24px;font-weight:700}
+  h1{font-size:31px;font-weight:700;letter-spacing:-.032em;line-height:1.1}
+  .tag{font-size:16px;color:var(--ink3);margin-top:2px}
+  .lede{font-size:18px;color:var(--ink2);margin:16px 0 26px;max-width:62ch}
+  .lede b{color:var(--ink);font-weight:640}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px 21px;
+        box-shadow:0 1px 2px rgba(38,29,15,.05),0 6px 18px -8px rgba(38,29,15,.14)}
+  .card h2{font-size:19px;font-weight:680;letter-spacing:-.022em;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .n{width:30px;height:30px;border-radius:10px;background:var(--soft);color:var(--gold);
+     display:grid;place-items:center;font-size:15px;font-weight:750;flex:none}
+  ol,ul{padding-left:20px;margin:0}
+  li{margin:8px 0;color:var(--ink2)}
+  li b{color:var(--ink);font-weight:640}
+  .key{display:inline-block;background:var(--soft);color:var(--gold2);border-radius:7px;
+       padding:1px 8px;font-weight:660;font-size:15px;white-space:nowrap}
+
+  .steps{display:flex;gap:12px;margin-top:4px;flex-wrap:wrap}
+  .step{flex:1;min-width:130px;background:var(--soft);border-radius:14px;padding:14px 15px}
+  .step .num{font-size:12px;font-weight:750;letter-spacing:.09em;text-transform:uppercase;color:var(--gold)}
+  .step .txt{font-size:16px;font-weight:600;margin-top:5px;line-height:1.35}
+
+  .read{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
+  .read div{display:grid;grid-template-columns:1fr;gap:1px;margin:11px 0}
+  .read .w{font-weight:680;color:var(--ink)}
+  .read .m{color:var(--ink2);font-size:16px}
+
+  .note{margin-top:26px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--green);
+        border-radius:14px;padding:16px 19px}
+  .note b{color:var(--green)}
+  footer{margin-top:24px;text-align:center;color:var(--ink3);font-size:14px}
+
+  @media print{
+    body{background:#fff;padding:0;font-size:11.5pt}
+    .card{box-shadow:none;break-inside:avoid}
+    .grid{gap:11px}
+    h1{font-size:23pt}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="mark">₹</span>
+    <div>
+      <h1>Hisaab</h1>
+      <div class="tag">Your money, at a glance</div>
+    </div>
+  </header>
+
+  <p class="lede">
+    Hisaab shows you where your money goes — in <b>pictures and colours</b>, not rows of numbers.
+    Open it, and within a few seconds you can see what today cost you and whether that's normal for you.
+    Everything stays <b>on your own phone or computer</b>. No account, no sign-up, no internet needed.
+  </p>
+
+  <div class="grid">
+
+    <div class="card">
+      <h2><span class="n">1</span> Add an expense</h2>
+      <p style="color:var(--ink2);margin-bottom:12px">Tap the big <b style="color:var(--gold)">+</b> button at the bottom. It takes about three seconds.</p>
+      <div class="steps">
+        <div class="step"><div class="num">Tap 1</div><div class="txt">Type the amount</div></div>
+        <div class="step"><div class="num">Tap 2</div><div class="txt">Pick a picture — food, travel, bills…</div></div>
+        <div class="step"><div class="num">Tap 3</div><div class="txt">Press <b>Add expense</b></div></div>
+      </div>
+      <ul style="margin-top:13px">
+        <li>Writing <b>what it was for</b> is optional — but it helps Hisaab learn.</li>
+        <li>Bought the same thing again? Tap one of the <b>shortcut chips</b> at the top and it fills itself in.</li>
+        <li>Forgot yesterday? Tap <b>Yesterday</b> or pick any date.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">2</span> The home screen</h2>
+      <p style="color:var(--ink2)">Everything here answers one question: <b>what happened to my money?</b></p>
+      <div class="read">
+        <div><span class="w">Spent today</span><span class="m">The big number. One glance is enough.</span></div>
+        <div><span class="w">Calm / Steady / Heavy</span><span class="m">Is today normal <i>for you</i>? Compared with your own usual days.</span></div>
+        <div><span class="w">The seven bars</span><span class="m">Your last seven days. The gold one is today.</span></div>
+        <div><span class="w">Coloured strip</span><span class="m">Where today's money went. Wider colour = more money.</span></div>
+        <div><span class="w">Still to come</span><span class="m">Bills Hisaab expects later this month, like rent.</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">3</span> The coloured squares</h2>
+      <p style="color:var(--ink2)">Under <b>“Where your money went”</b> you'll see boxes of different sizes.</p>
+      <ul style="margin-top:10px">
+        <li><b>Bigger box = more money spent.</b> That's the whole trick — no reading required.</li>
+        <li>Each colour is one kind of spending. Food is orange, travel is blue, and so on.</li>
+        <li><b>Tap any box</b> to see that one thing in detail — how it's changed over six months, and what you actually buy.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">4</span> Insights &amp; History</h2>
+      <ul>
+        <li><b>Insights</b> — a calendar where darker days cost more, your heaviest weekday, and plain-English notes like <i>“weekends cost you 1.6× a weekday.”</i></li>
+        <li><b>History</b> — every expense, newest first, grouped by day. Search for a word <i>or an amount</i> like <span class="key">₹500</span>.</li>
+        <li><b>Tap any expense</b> to change it or delete it. Deleted by mistake? Press <b>Undo</b>.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">5</span> Make it comfortable</h2>
+      <p style="color:var(--ink2)">Open <b>Settings</b> at the bottom right.</p>
+      <ul style="margin-top:10px">
+        <li><b>Text size</b> — three sizes. The whole app grows, not just some words.</li>
+        <li><b>Theme</b> — light, dark, or automatic.</li>
+        <li><b>Monthly budget</b> — optional. Set it and Hisaab shows whether you're ahead or behind for the date.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">6</span> Keep your records safe</h2>
+      <ul>
+        <li>Your expenses live <b>only on this device</b>. Nobody else can see them — not even us.</li>
+        <li>That also means: if you clear your browser data, they're gone.</li>
+        <li>So every so often, open <b>Settings → Export as JSON</b> and keep that file somewhere safe.</li>
+        <li>To bring it back later: <b>Settings → Restore from a backup</b>.</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <div class="note">
+    <b>Nothing to sign up for.</b> Hisaab never asks for your name, phone number, bank or card.
+    It cannot spend your money or move it. It only remembers what you type in — and it keeps
+    working with no internet at all.
+  </div>
+
+  <footer>Hisaab · add it to your home screen and it opens like any other app</footer>
+</div>
+</body>
+</html>

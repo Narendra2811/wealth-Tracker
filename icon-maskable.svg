@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Maskable: the launcher may crop this to a circle, squircle or rounded square.
+       Everything that matters sits inside the centre 80% safe zone. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E9AE55"/>
+      <stop offset="1" stop-color="#A2661A"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <g fill="none" stroke="#FFF6E6" stroke-opacity=".30" stroke-width="21" stroke-linecap="round">
+    <path d="M158 356v-42M214 356v-84M270 356v-64"/>
+  </g>
+  <text x="256" y="300" text-anchor="middle"
+        font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="210" font-weight="700" fill="#fff">₹</text>
+</svg>

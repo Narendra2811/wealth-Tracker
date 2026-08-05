@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local tooling / scratch
+.claude/
+node_modules/
+*.log
+
+# Exports produced by the app itself
+hisaab-*.json
+hisaab-*.csv
