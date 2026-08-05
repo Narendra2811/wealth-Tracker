@@ -7,16 +7,19 @@
 
   /* ===================== categories ===================== */
   const CATS = [
-    { id:'food',      name:'Food & Drink', short:'Food',    icon:'i-food',      light:'#E2603A', dark:'#F0714C' },
-    { id:'grocery',   name:'Groceries',    short:'Grocery', icon:'i-grocery',   light:'#3D8F42', dark:'#55B15A' },
-    { id:'transport', name:'Transport',    short:'Travel',  icon:'i-transport', light:'#2C7CD1', dark:'#4E9BEE' },
-    { id:'shopping',  name:'Shopping',     short:'Shop',    icon:'i-shopping',  light:'#7B57D9', dark:'#9B7BEE' },
-    { id:'bills',     name:'Bills',        short:'Bills',   icon:'i-bills',     light:'#0E8A8A', dark:'#26AAAA' },
-    { id:'health',    name:'Health',       short:'Health',  icon:'i-health',    light:'#D3446A', dark:'#EC6088' },
-    { id:'fun',       name:'Fun',          short:'Fun',     icon:'i-fun',       light:'#DE9412', dark:'#EFAA33' },
-    { id:'home',      name:'Home',         short:'Home',    icon:'i-home',      light:'#A2683C', dark:'#C08554' },
-    { id:'gifts',     name:'Gifts',        short:'Gifts',   icon:'i-gift',      light:'#D45BA3', dark:'#EB79BC' },
-    { id:'other',     name:'Other',        short:'Other',   icon:'i-other',     light:'#6B7280', dark:'#98A0AD' },
+    // `short` must always be a shortening of `name`, never a different word — the same
+    // expense appearing as "Travel" in one place and "Transport" in another reads as
+    // two separate things to anyone not already fluent in the app.
+    { id:'food',      name:'Food & Drink', short:'Food',      icon:'i-food',      light:'#C4441F', dark:'#F0714C' },
+    { id:'grocery',   name:'Groceries',    short:'Groceries', icon:'i-grocery',   light:'#347C39', dark:'#55B15A' },
+    { id:'transport', name:'Transport',    short:'Transport', icon:'i-transport', light:'#2570BE', dark:'#4E9BEE' },
+    { id:'shopping',  name:'Shopping',     short:'Shopping',  icon:'i-shopping',  light:'#7B57D9', dark:'#9B7BEE' },
+    { id:'bills',     name:'Bills',        short:'Bills',   icon:'i-bills',     light:'#0C7C7C', dark:'#26AAAA' },
+    { id:'health',    name:'Health',       short:'Health',  icon:'i-health',    light:'#C43D61', dark:'#EC6088' },
+    { id:'fun',       name:'Fun',          short:'Fun',     icon:'i-fun',       light:'#956600', dark:'#EFAA33' },
+    { id:'home',      name:'Home',         short:'Home',    icon:'i-home',      light:'#9A6238', dark:'#C08554' },
+    { id:'gifts',     name:'Gifts',        short:'Gifts',   icon:'i-gift',      light:'#B94A8B', dark:'#EB79BC' },
+    { id:'other',     name:'Other',        short:'Other',   icon:'i-other',     light:'#646B78', dark:'#98A0AD' },
   ];
   const CAT = {}; CATS.forEach(c => CAT[c.id] = c);
   const catOf = id => CAT[id] || CAT.other;
@@ -102,12 +105,16 @@
     const v = Math.abs(n) < 0.005 ? 0 : n;
     return '<span class="cur">₹</span>' + (dec ? nfDec : nfInt).format(dec ? v : Math.round(v));
   }
+  /**
+   * Short form for tight spaces. Deliberately NOT "₹61k" — nobody writing hisaab in
+   * India writes money that way, and hiding the real figure from someone who is good
+   * with money but not with app jargon costs you their trust. Full grouped numbers up
+   * to a lakh, then the units people actually use: L and Cr.
+   */
   function compact(n) {
     n = Math.round(Math.abs(safeNum(n)));
     if (n >= 1e7) return '₹' + trim(n/1e7) + 'Cr';
     if (n >= 1e5) return '₹' + trim(n/1e5) + 'L';
-    if (n >= 10000) return '₹' + Math.round(n/1000) + 'k';
-    if (n >= 1000) return '₹' + trim(n/1000) + 'k';
     return '₹' + nfInt.format(n);
   }
   const trim = v => (v >= 10 ? Math.round(v) : Math.round(v*10)/10).toString();
@@ -336,7 +343,6 @@
 
   function monthRange(y, m) { return [new Date(y,m,1).getTime(), new Date(y,m+1,1).getTime()]; }
   function thisMonth() { const n = new Date(); return monthRange(n.getFullYear(), n.getMonth()); }
-  function lastMonth() { const n = new Date(); return monthRange(n.getFullYear(), n.getMonth()-1); }
 
   function periodRange(p) {
     const n = new Date();
@@ -564,7 +570,12 @@
       cmp = `<span class="delta delta--flat">Same as yesterday</span>`;
     } else {
       const up = d > 0;
-      cmp = `<span class="delta delta--${up?'up':'down'}">${icon(up?'i-up':'i-down')}${money(Math.abs(d))}</span>
+      // Alarm colours are for amounts that deserve alarm. Yesterday having no entries
+      // at all, or a difference smaller than a cup of chai, is not news — showing
+      // "+₹31" in warning red just teaches people to ignore the colour.
+      const trivial = tYest === 0 || Math.abs(d) < Math.max(50, typ * 0.15);
+      const tone = trivial ? 'flat' : (up ? 'up' : 'down');
+      cmp = `<span class="delta delta--${tone}">${trivial ? '' : icon(up?'i-up':'i-down')}${money(Math.abs(d))}</span>
              <span class="cmp-note">${up ? 'more' : 'less'} than yesterday</span>`;
     }
 
@@ -592,7 +603,8 @@
               </button>`;
     }).join('');
     const avgPct = clamp(avg7 / cap * 100, 0, 100);
-    const labels = week.map(w => `<span class="${sameDay(w.date, today)?'is-today':''}">${DAYS_1[w.date.getDay()]}</span>`).join('');
+    // three letters, not one — "T F S S M T W" is unreadable when two days share a letter
+    const labels = week.map(w => `<span class="${sameDay(w.date, today)?'is-today':''}">${DAYS_S[w.date.getDay()]}</span>`).join('');
 
     // today's flow
     const todayCats = byCategory(ofDay(today));
@@ -601,10 +613,12 @@
       flow = `<div class="hero__empty">${icon('i-leaf')}<p>No spending yet today. Your money is exactly where you left it.</p></div>`;
     } else {
       const tot = sum(todayCats.map(c => c.amount)) || 1;
+      // With one category the bar is a full-width block of colour: it looks like a stuck
+      // progress bar and says nothing the legend line below doesn't already say.
       flow = `<div class="flow">
         <div class="flow__label">Where today's money went</div>
-        <div class="flow__bar" aria-hidden="true">${todayCats.map(c =>
-          `<span class="flow__seg" style="--c:${cc(c.catId)}" data-w="${Math.max(c.amount/tot*100, 2)}%" title="${esc(catOf(c.catId).name)} ${money(c.amount)}"></span>`).join('')}</div>
+        ${todayCats.length < 2 ? '' : `<div class="flow__bar" aria-hidden="true">${todayCats.map(c =>
+          `<span class="flow__seg" style="--c:${cc(c.catId)}" data-w="${Math.max(c.amount/tot*100, 2)}%" title="${esc(catOf(c.catId).name)} ${money(c.amount)}"></span>`).join('')}</div>`}
         <div class="flow__keys">${todayCats.slice(0,5).map(c =>
           `<span class="fkey" style="--c:${cc(c.catId)}"><i></i>${esc(catOf(c.catId).short)} <b class="money">${money(c.amount)}</b></span>`).join('')}</div>
       </div>`;
@@ -725,7 +739,7 @@
 
     if (!cats.length) {
       return `<section class="sec rise" style="animation-delay:.12s">
-        <div class="sec__head"><div><div class="sec__title">Where your money went</div><div class="sec__sub">${pLabel}</div></div>${segs}</div>
+        <div class="sec__head"><div><h2 class="sec__title">Where your money went</h2><div class="sec__sub">${pLabel}</div></div>${segs}</div>
         <div class="card"><div class="empty" style="padding:30px 20px">
           <span class="empty__ic">${icon('i-wallet')}</span>
           <span class="empty__t">Nothing here yet</span>
@@ -735,7 +749,7 @@
     }
 
     const max = cats[0].amount;
-    const rows = cats.slice(0, 6).map(c => {
+    const rows = cats.map(c => {
       const cat = catOf(c.catId), n = counts.get(c.catId) || 0;
       return `<button class="rrow" data-act="open-cat" data-cat="${c.catId}">
         <span class="cat-ic" style="${cvars(c.catId)}">${icon(cat.icon)}</span>
@@ -752,7 +766,7 @@
 
     return `<section class="sec rise" style="animation-delay:.12s">
       <div class="sec__head">
-        <div><div class="sec__title">Where your money went</div><div class="sec__sub">${pLabel} · ${money(total)}</div></div>
+        <div><h2 class="sec__title">Where your money went</h2><div class="sec__sub">${pLabel} · ${money(total)}</div></div>
         ${segs}
       </div>
       <div class="tmap" data-tm='${JSON.stringify(cats)}' aria-label="Spending by category, sized by amount"></div>
@@ -771,7 +785,7 @@
 
     return `<section class="sec rise" style="animation-delay:.15s">
       <div class="sec__head">
-        <div><div class="sec__title">Still to come</div>
+        <div><h2 class="sec__title">Still to come</h2>
           <div class="sec__sub">Bills that usually land later this month</div></div>
         <div style="text-align:right">
           <div class="eyebrow">Expected</div>
@@ -818,7 +832,7 @@
       : `That's <b>${trim(x)}×</b> your typical expense.`;
 
     return `<section class="sec rise" style="animation-delay:.18s">
-      <div class="sec__head"><div><div class="sec__title">Biggest spend</div><div class="sec__sub">${MONS[new Date().getMonth()]} so far</div></div></div>
+      <div class="sec__head"><div><h2 class="sec__title">Biggest spend</h2><div class="sec__sub">${MONS[new Date().getMonth()]} so far</div></div></div>
       <button class="card" style="width:100%;text-align:left" data-act="open-exp" data-id="${esc(top.id)}">
         <div class="big">
           <span class="cat-ic cat-ic--lg" style="${cvars(top.catId)}">${icon(cat.icon)}</span>
@@ -981,7 +995,7 @@
     const canNext = (y < today.getFullYear()) || (y === today.getFullYear() && m < today.getMonth());
     return `<section class="sec rise">
       <div class="sec__head">
-        <div><div class="sec__title">${MONS[m]} ${y}</div><div class="sec__sub">${total ? money(total) + ' across the month' : 'Nothing recorded'}</div></div>
+        <div><h2 class="sec__title">${MONS[m]} ${y}</h2><div class="sec__sub">${total ? money(total) + ' spent this month' : 'Nothing recorded'}</div></div>
         <div style="display:flex;gap:6px">
           <button class="iconbtn" data-act="cal" data-d="-1" aria-label="Previous month" style="transform:rotate(180deg)">${icon('i-chev-right')}</button>
           <button class="iconbtn" data-act="cal" data-d="1" aria-label="Next month" ${canNext?'':'disabled style="opacity:.35"'}>${icon('i-chev-right')}</button>
@@ -1019,7 +1033,7 @@
     const topIdx = avg.indexOf(Math.max.apply(null, avg));
 
     return `<section class="sec rise" style="animation-delay:.06s">
-      <div class="sec__head"><div><div class="sec__title">Your weekly rhythm</div>
+      <div class="sec__head"><div><h2 class="sec__title">Your weekly rhythm</h2>
         <div class="sec__sub">Average spend per weekday, last 8 weeks</div></div></div>
       <div class="card"><div class="wk">
         ${order.map(i => `<div class="wk__row ${i===topIdx?'is-top':''}">
@@ -1086,14 +1100,14 @@
     }
 
     return `<section class="sec rise">
-      <div class="sec__head"><div><div class="sec__title">Month by month</div>
+      <div class="sec__head"><div><h2 class="sec__title">Month by month</h2>
         <div class="sec__sub">${complete.length} full ${complete.length===1?'month':'months'} · average ${money(avg)}</div></div></div>
       <div class="card">
         <div class="year" aria-hidden="true">
           ${avgPct > 6 && avgPct < 96 ? `<span class="year__avg" style="bottom:${avgPct}%"><i></i></span>` : ''}
           ${months.map(m => `<div class="year__col">
             <span class="year__v money">${m.amount ? compact(m.amount) : '—'}</span>
-            <span class="year__bar ${m.isNow?'is-now':''} ${m.partial?'is-partial':''}" data-h="${m.amount/max*100}%"></span>
+            <span class="year__track"><span class="year__bar ${m.isNow?'is-now':''} ${m.partial?'is-partial':''}" data-h="${m.amount/max*100}%"></span></span>
             <span class="year__l">${m.label}</span>
           </div>`).join('')}
         </div>
@@ -1132,7 +1146,7 @@
     const ord = n => { const s = ['th','st','nd','rd'], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
 
     return `<section class="sec rise" style="animation-delay:.09s">
-      <div class="sec__head"><div><div class="sec__title">What's locked in</div>
+      <div class="sec__head"><div><h2 class="sec__title">What's locked in</h2>
         <div class="sec__sub">Of a typical ${money(typical)} month, over the last ${months.length} ${months.length===1?'month':'months'}</div></div></div>
       <div class="card">
         <div class="split" aria-hidden="true">
@@ -1186,7 +1200,7 @@
     const max = Math.max.apply(null, rows.map(r => Math.max(r.a, r.b)).concat([1]));
 
     return `<section class="sec rise" style="animation-delay:.12s">
-      <div class="sec__head"><div><div class="sec__title">What changed</div>
+      <div class="sec__head"><div><h2 class="sec__title">What changed</h2>
         <div class="sec__sub">${MONS_S[lm.getMonth()]} vs ${MONS_S[now.getMonth()]}, both to day ${dayNo}</div></div></div>
       <div class="card"><div class="shift">
         ${rows.map(r => {
@@ -1288,16 +1302,13 @@
 
   function sampleBanner() {
     if (!DB.sample || DB.dismissed) return '';
-    return `<div class="banner rise">
+    // One line. A disclaimer should not be the largest thing on a money app's first
+    // screen — ignoring it already *is* "keep exploring", so that button earned nothing.
+    return `<div class="banner banner--slim rise">
       ${icon('i-sparkle')}
-      <div class="banner__b">
-        <div class="banner__t">You're looking at sample data</div>
-        <div class="banner__s">Three months of realistic expenses, so you can see how Hisaab reads your money. Clear it whenever you're ready to start your own.</div>
-        <div class="banner__a">
-          <button class="btn btn--sm btn--primary" data-act="fresh">Start fresh</button>
-          <button class="btn btn--sm btn--ghost" data-act="dismiss">Keep exploring</button>
-        </div>
-      </div>
+      <div class="banner__b"><div class="banner__t">These are sample expenses, not yours</div></div>
+      <button class="btn btn--sm btn--primary" data-act="fresh">Start fresh</button>
+      <button class="iconbtn iconbtn--sm" data-act="dismiss" aria-label="Hide this message">${icon('i-close')}</button>
     </div>`;
   }
 
@@ -1310,7 +1321,7 @@
     if (!all().length) {
       return `
         <div class="greet rise">
-          <div class="greet__hi">${greeting()}</div>
+          <h1 class="greet__hi">${greeting()}</h1>
           <div class="greet__date">${DAYS[new Date().getDay()]}, ${fullDate(new Date())}</div>
         </div>
         <div class="stack rise" style="margin-top:14px">${heroCard()}</div>
@@ -1333,7 +1344,7 @@
 
     return safetyBanner() + sampleBanner() + `
       <div class="greet rise">
-        <div class="greet__hi">${greeting()}</div>
+        <h1 class="greet__hi">${greeting()}</h1>
         <div class="greet__date">${DAYS[new Date().getDay()]}, ${fullDate(new Date())}</div>
       </div>
       <div class="stack" style="margin-top:14px">
@@ -1344,12 +1355,12 @@
       ${whereSection(S.period)}
       ${biggestSection()}
       ${pick ? `<section class="sec rise" style="animation-delay:.22s">
-        <div class="sec__head"><div><div class="sec__title">Worth noticing</div></div>
+        <div class="sec__head"><div><h2 class="sec__title">Worth noticing</h2></div>
           <button class="link" data-act="go-insights">More ${icon('i-chev-right')}</button></div>
         ${insightCard(pick)}
       </section>` : ''}
       ${recent.length ? `<section class="sec rise" style="animation-delay:.26s">
-        <div class="sec__head"><div><div class="sec__title">Latest</div></div>
+        <div class="sec__head"><div><h2 class="sec__title">Latest</h2></div>
           <button class="link" data-act="go-history">All expenses ${icon('i-chev-right')}</button></div>
         <div>${recent.map(itemRow).join('')}</div>
       </section>` : ''}
@@ -1363,8 +1374,8 @@
     const now = new Date();
     return `
       <div class="greet rise">
-        <div class="greet__hi">Insights</div>
-        <div class="greet__date">How your money behaves</div>
+        <h1 class="greet__hi">Insights</h1>
+        <div class="greet__date">Your spending patterns over time</div>
       </div>
       ${yearSection()}
       ${calendar(S.cal.y, S.cal.m)}
@@ -1372,7 +1383,7 @@
       ${weekdaySection()}
       ${shiftSection()}
       ${ins.length ? `<section class="sec rise" style="animation-delay:.18s">
-        <div class="sec__head"><div><div class="sec__title">Patterns</div>
+        <div class="sec__head"><div><h2 class="sec__title">Patterns</h2>
           <div class="sec__sub">${MONS[now.getMonth()]} ${now.getFullYear()}</div></div></div>
         <div class="ins-grid">${ins.map(insightCard).join('')}</div>
       </section>` : ''}
@@ -1419,8 +1430,8 @@
 
     const head = `
       <div class="greet rise">
-        <div class="greet__hi">History</div>
-        <div class="greet__date">${list.length} ${list.length===1?'expense':'expenses'} · ${money(sum(list.map(e=>e.amount)))}</div>
+        <h1 class="greet__hi">History</h1>
+        <div class="greet__date">${list.length} ${list.length===1?'expense':'expenses'} · ${money(sum(list.map(e=>e.amount)))} spent in total</div>
       </div>
       <div class="stack rise" style="margin-top:14px">
         <label class="searchbar">${icon('i-search')}
@@ -1478,47 +1489,47 @@
     const themes = [['auto','Auto'],['light','Light'],['dark','Dark']];
     return `
       <div class="greet rise">
-        <div class="greet__hi">Settings</div>
+        <h1 class="greet__hi">Settings</h1>
         <div class="greet__date">Make Hisaab yours</div>
       </div>
 
       <section class="sec rise">
-        <div class="sec__head"><div class="sec__title">Appearance</div></div>
+        <div class="sec__head"><h2 class="sec__title">Appearance</h2></div>
         <div class="list">
           <div class="li">
-            <span class="li__b"><span class="li__t">Theme</span><span class="li__s">Auto follows your device</span></span>
-            <span class="seg">${themes.map(([k,l]) => `<button data-act="theme" data-v="${k}" aria-pressed="${DB.theme===k}">${l}</button>`).join('')}</span>
+            <span class="li__b"><span class="li__t">Theme</span><span class="li__s">Follows your device</span></span>
+            <span class="seg" role="group" aria-label="Theme">${themes.map(([k,l]) => `<button data-act="theme" data-v="${k}" aria-pressed="${DB.theme===k}">${l}</button>`).join('')}</span>
           </div>
           <div class="li">
             <span class="li__b"><span class="li__t">Text size</span><span class="li__s">Bigger text, everywhere</span></span>
-            <span class="sizepick">${[['md','A'],['lg','A'],['xl','A']].map(([k,l]) => `<button data-act="size" data-v="${k}" aria-pressed="${DB.size===k}" aria-label="Text size ${k}">${l}</button>`).join('')}</span>
+            <span class="sizepick" role="group" aria-label="Text size">${[['md','A'],['lg','A'],['xl','A']].map(([k,l]) => `<button data-act="size" data-v="${k}" aria-pressed="${DB.size===k}" aria-label="${({md:'Normal',lg:'Large',xl:'Extra large'})[k]} text">${l}</button>`).join('')}</span>
           </div>
         </div>
       </section>
 
       <section class="sec rise" style="animation-delay:.06s">
-        <div class="sec__head"><div><div class="sec__title">Monthly budget</div>
-          <div class="sec__sub">Optional — powers the pace marker on your home screen</div></div></div>
+        <div class="sec__head"><div><h2 class="sec__title">Monthly budget</h2>
+          <div class="sec__sub">Optional. Set one and Hisaab shows whether you are spending too fast for the date.</div></div></div>
         <div class="list"><div class="li">
-          <span class="li__b"><span class="li__t">Budget for a month</span><span class="li__s">${DB.budget>0?`Currently ${money(DB.budget)}`:'Not set'}</span></span>
-          <label class="budgetinput"><span>₹</span><input id="budget" type="number" inputmode="numeric" min="0" step="500" value="${DB.budget||''}" placeholder="0"></label>
+          <span class="li__b"><span class="li__t">Monthly budget</span><span class="li__s">${DB.budget>0?'Leave empty to turn it off':'Not set yet'}</span></span>
+          <label class="budgetinput"><span>₹</span><input id="budget" type="number" aria-label="Monthly budget in rupees" inputmode="numeric" min="0" step="500" value="${DB.budget||''}" placeholder="0"></label>
         </div></div>
       </section>
 
       <section class="sec rise" style="animation-delay:.12s">
-        <div class="sec__head"><div><div class="sec__title">Your data</div>
+        <div class="sec__head"><div><h2 class="sec__title">Your data</h2>
           <div class="sec__sub">${all().length} ${all().length===1?'expense':'expenses'} stored on this device${memoryOnly?' (this session only — storage is blocked)':''}</div></div></div>
         <div class="list">
-          <button class="li li--btn" data-act="export-csv"><span class="li__b"><span class="li__t">Export as CSV</span><span class="li__s">Opens in Excel, Numbers or Sheets</span></span>${icon('i-download')}</button>
-          <button class="li li--btn" data-act="export-json"><span class="li__b"><span class="li__t">Export as JSON</span><span class="li__s">A full backup you can keep</span></span>${icon('i-download')}</button>
-          <button class="li li--btn" data-act="import"><span class="li__b"><span class="li__t">Restore from a backup</span><span class="li__s">Bring a JSON export back in, merged or replaced</span></span>${icon('i-repeat')}</button>
+          <button class="li li--btn" data-act="export-csv"><span class="li__b"><span class="li__t">Save as a spreadsheet</span><span class="li__s">Opens in Excel, Numbers or Sheets (a CSV file)</span></span>${icon('i-download')}</button>
+          <button class="li li--btn" data-act="export-json"><span class="li__b"><span class="li__t">Save a full backup</span><span class="li__s">A complete copy of everything, to keep somewhere safe</span></span>${icon('i-download')}</button>
+          <button class="li li--btn" data-act="import"><span class="li__b"><span class="li__t">Restore from a backup</span><span class="li__s">Bring back a copy you saved earlier</span></span>${icon('i-repeat')}</button>
           <button class="li li--btn" data-act="load-sample"><span class="li__b"><span class="li__t">Load sample data</span><span class="li__s">Replaces everything with three months of examples</span></span>${icon('i-sparkle')}</button>
           <button class="li li--btn li--danger" data-act="erase"><span class="li__b"><span class="li__t">${S.confirmErase ? 'Tap again to erase everything' : 'Erase everything'}</span><span class="li__s">${S.confirmErase ? 'This cannot be undone' : 'Deletes every expense on this device'}</span></span>${icon('i-trash')}</button>
         </div>
       </section>
 
       <section class="sec rise" style="animation-delay:.18s">
-        <div class="sec__head"><div><div class="sec__title">Keyboard</div>
+        <div class="sec__head"><div><h2 class="sec__title">Keyboard</h2>
           <div class="sec__sub">If you're on a laptop</div></div></div>
         <div class="list"><div class="li" style="display:block">
           <div class="keys">
@@ -1554,11 +1565,31 @@
     liveRegion.textContent = msg;
   }
 
+  /**
+   * Remember which control the keyboard was on. Re-rendering replaces the whole view,
+   * which destroyed the focused element and dropped focus to <body> — so changing the
+   * theme or text size with the keyboard threw you back to the top of the page, and
+   * those are exactly the controls someone with low vision reaches for first.
+   */
+  function focusKey(el) {
+    if (!el || !viewEl.contains(el) || !el.dataset || !el.dataset.act) return null;
+    const d = el.dataset;
+    return '[data-act="' + d.act + '"]'
+      + (d.v != null ? '[data-v="' + d.v + '"]' : '')
+      + (d.p != null ? '[data-p="' + d.p + '"]' : '')
+      + (d.cat != null ? '[data-cat="' + d.cat + '"]' : '');
+  }
+
   function render(keepScroll) {
     computeDark();
     const y = keepScroll ? window.scrollY : null;
+    const refocus = focusKey(document.activeElement);
     const map = { home: viewHome, insights: viewInsights, history: viewHistory, settings: viewSettings };
     viewEl.innerHTML = (map[S.view] || viewHome)();
+    if (refocus) {
+      const again = viewEl.querySelector(refocus);
+      if (again) again.focus({ preventScroll: true });
+    }
 
     // topbar mini-total
     if (S.view === 'home' || S.view === 'insights') {
@@ -1658,9 +1689,10 @@
   /* ===================== sheets ===================== */
   const scrim = $('#scrim'), sheet = $('#sheet'), fab = $('#fab');
   let sheetOpen = null, returnFocus = null;
-  const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+  const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
   function openSheet(kind, html, onMount) {
+    const wasOpen = !!sheetOpen;                  // swapping content, not opening afresh
     if (!sheetOpen) returnFocus = document.activeElement;
     sheet.innerHTML = `<span class="sheet__grip"></span>` + html;
     sheet.hidden = false; scrim.hidden = false;
@@ -1674,10 +1706,15 @@
     enhance(sheet);
     // focus the dialog itself rather than a control, so Enter doesn't fire something
     sheet.focus({ preventScroll: true });
+    // one history entry per sheet, so Back (or the Android gesture) closes it
+    if (!navLock && ownsHistory && !wasOpen) {
+      history.pushState({ view: S.view, sheet: kind }, '', location.hash || '#' + S.view);
+    }
   }
 
-  function closeSheet() {
+  function closeSheet(fromPop) {
     if (!sheetOpen) return;
+    const hadHistoryEntry = ownsHistory && !fromPop && !navLock && history.state && history.state.sheet;
     sheetOpen = null; S.editing = null; S.draft = null; S.pendingImport = null;
     fab.classList.remove('is-open');
     scrim.classList.remove('in'); sheet.classList.remove('in');
@@ -1688,6 +1725,7 @@
     }
     returnFocus = null;
     setTimeout(() => { if (!sheetOpen) { sheet.hidden = true; scrim.hidden = true; sheet.innerHTML = ''; } }, 380);
+    if (hadHistoryEntry) history.back();               // consume the entry the sheet pushed
   }
 
   /* Drag the sheet down by its grip or header to dismiss it. Bottom-sheet layouts
@@ -1722,7 +1760,7 @@
 
   /** Keeps Tab inside the open dialog. */
   function trapTab(ev) {
-    const items = $$(FOCUSABLE, sheet).filter(el => el.offsetParent !== null);
+    const items = $$(FOCUSABLE, sheet).filter(el => el.tabIndex >= 0 && el.offsetParent !== null);
     if (!items.length) { ev.preventDefault(); return; }
     const first = items[0], last = items[items.length - 1];
     const active = document.activeElement;
@@ -1767,11 +1805,11 @@
 
     openSheet('add', `
       <div class="sheet__head">
-        <span class="sheet__title">${existing ? 'Edit expense' : 'New expense'}</span>
+        <h2 class="sheet__title">${existing ? 'Edit expense' : 'New expense'}</h2>
         <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
       </div>
       <div class="sheet__body">
-        <div class="amt is-zero" id="amtDisp"><span class="cur">₹</span><span id="amtVal">0</span><span class="amt__caret"></span></div>
+        <div class="amt is-zero" id="amtDisp" role="status" aria-live="polite" aria-atomic="true" aria-label="Amount entered"><span class="cur">₹</span><span id="amtVal">0</span><span class="amt__caret"></span></div>
 
         ${picks.length ? `<div class="quick" id="quick">${picks.map((p,i) => {
           const c = catOf(p.catId);
@@ -1788,14 +1826,14 @@
 
         <span class="lbl">Details</span>
         <div class="metarow">
-          <input class="noteinput" id="note" type="text" placeholder="What was it for? (optional)" value="${esc(d.note)}" maxlength="60" autocomplete="off">
+          <input class="noteinput" id="note" type="text" aria-label="What the expense was for" placeholder="What was it for? (optional)" value="${esc(d.note)}" maxlength="60" autocomplete="off">
         </div>
         <div class="metarow" style="margin-top:8px">
           <div class="seg">
             <button data-act="date" data-v="today" aria-pressed="${d.date===dayKey(new Date())}">Today</button>
             <button data-act="date" data-v="yest" aria-pressed="${d.date===dayKey(addDays(new Date(),-1))}">Yesterday</button>
           </div>
-          <input class="noteinput" id="date" type="date" value="${d.date}" max="${dayKey(new Date())}" style="max-width:170px">
+          <input class="noteinput" id="date" type="date" aria-label="Date of this expense" value="${d.date}" max="${dayKey(new Date())}" style="max-width:170px">
         </div>
         <div style="height:8px"></div>
       </div>
@@ -1874,7 +1912,7 @@
     const c = catOf(e.catId);
     openSheet('detail', `
       <div class="sheet__head">
-        <span class="sheet__title">Expense</span>
+        <h2 class="sheet__title">Expense</h2>
         <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
       </div>
       <div class="sheet__body">
@@ -1903,7 +1941,7 @@
 
     openSheet('recurring', `
       <div class="sheet__head">
-        <span class="sheet__title">Regular bill</span>
+        <h2 class="sheet__title">Regular bill</h2>
         <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
       </div>
       <div class="sheet__body">
@@ -1978,7 +2016,7 @@
 
     openSheet('cat', `
       <div class="sheet__head">
-        <span class="sheet__title">${esc(cat.name)}</span>
+        <h2 class="sheet__title">${esc(cat.name)}</h2>
         <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
       </div>
       <div class="sheet__body">
@@ -1992,7 +2030,7 @@
         <div class="trend" style="${cvars(catId)}">
           ${trend.map((t, i) => `<div class="trend__col">
             <span class="trend__v money">${t.amount ? compact(t.amount) : '—'}</span>
-            <span class="trend__bar ${i===trend.length-1?'is-now':''}" data-h="${t.amount/max*100}%"></span>
+            <span class="trend__track"><span class="trend__bar ${i===trend.length-1?'is-now':''}" data-h="${t.amount/max*100}%"></span></span>
             <span class="trend__l">${t.label}</span>
           </div>`).join('')}
         </div>
@@ -2035,7 +2073,7 @@
     const cats = byCategory(list);
     openSheet('day', `
       <div class="sheet__head">
-        <span class="sheet__title">${relDay(d)}</span>
+        <h2 class="sheet__title">${relDay(d)}</h2>
         <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
       </div>
       <div class="sheet__body">
@@ -2134,7 +2172,7 @@
 
       openSheet('import', `
         <div class="sheet__head">
-          <span class="sheet__title">Restore backup</span>
+          <h2 class="sheet__title">Restore backup</h2>
           <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button>
         </div>
         <div class="sheet__body">
@@ -2391,16 +2429,44 @@
     else if (ev.key === '4') go('settings');
   });
 
-  function go(view) {
-    if (S.view === view && view !== 'history') { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  /* ---------- navigation & browser history ----------
+     Without this the app was a single history entry: on Android the Back gesture
+     left the app instead of closing an open sheet, and Back from Insights exited
+     rather than returning Home. Tabs and sheets now both push an entry, so Back
+     does the obvious thing and screens are linkable. */
+  const VIEWS = ['home', 'insights', 'history', 'settings'];
+  let navLock = false;
+  // Only drive history when we own the window. Embedded in a frame, pushing and
+  // popping entries would hijack the host page's Back button.
+  let ownsHistory = true;
+  try { ownsHistory = window.top === window.self; } catch (e) { ownsHistory = false; }                 // set while reacting to popstate, to avoid pushing back
+
+  function go(view, opts) {
+    opts = opts || {};
+    if (VIEWS.indexOf(view) < 0) view = 'home';
+    if (S.view === view && !opts.force) { window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' }); return; }
     S.view = view;
     if (view === 'history') S.limit = 120;
-    if (view !== 'history') { S.filterCat = null; S.query = ''; }
+    else { S.filterCat = null; S.query = ''; }
     S.confirmErase = false;
+    if (!navLock && ownsHistory) {
+      const url = '#' + view;
+      if (opts.replace) history.replaceState({ view: view }, '', url);
+      else history.pushState({ view: view }, '', url);
+    }
     render();
     window.scrollTo(0, 0);
     viewEl.focus({ preventScroll: true });
   }
+
+  window.addEventListener('popstate', ev => {
+    navLock = true;
+    const st = ev.state || {};
+    if (sheetOpen && !st.sheet) closeSheet(true);          // Back closes the sheet first
+    const target = st.view || String(location.hash || '').replace('#', '') || 'home';
+    if (VIEWS.indexOf(target) >= 0 && target !== S.view) go(target, { force: true });
+    navLock = false;
+  });
 
   /**
    * Another tab of the same app is a second writer to the same store. Without this,
@@ -2442,6 +2508,12 @@
     save();
   }
   applyTheme();
+
+  // honour a deep link (#insights) and seed history with a state object, so the
+  // first Back press has somewhere sensible to land
+  const bootView = String(location.hash || '').replace('#', '');
+  if (VIEWS.indexOf(bootView) >= 0) S.view = bootView;
+  if (ownsHistory) history.replaceState({ view: S.view }, '', '#' + S.view);
   render();
 
   // Offline shell. Skipped on file:// where service workers aren't allowed anyway.

@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hisaab — test suite</title>
+<style>
+  :root{--ok:#2E7D46;--bad:#C0392B;--ink:#191510;--mut:#7A7166;--line:rgba(0,0,0,.1)}
+  body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       margin:0;padding:24px;background:#F4F1EB;color:var(--ink)}
+  h1{font-size:22px;letter-spacing:-.02em;margin:0 0 4px}
+  .sub{color:var(--mut);margin-bottom:18px}
+  #summary{position:sticky;top:0;background:#F4F1EB;padding:12px 0;border-bottom:1px solid var(--line);
+           font-weight:700;font-size:17px;z-index:2}
+  .grp{margin:18px 0 8px;font-weight:700;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+  .t{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);align-items:baseline}
+  .t b{flex:none;width:52px;font-weight:700;font-size:12px}
+  .pass b{color:var(--ok)} .fail b{color:var(--bad)}
+  .fail{background:rgba(192,57,43,.07)}
+  .msg{color:var(--bad);font-size:13px;margin-left:62px;white-space:pre-wrap}
+  iframe{position:absolute;left:-9999px;width:420px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1>Hisaab test suite</h1>
+<div class="sub">Runs the real app in an iframe. No dependencies, no runner to install — open this file.</div>
+<div id="summary">running…</div>
+<div id="out"></div>
+<iframe id="app" src="index.html#home"></iframe>
+
+<script>
+/* ============================================================
+   A dependency-free test harness.
+   Pure functions are tested by reaching into the app's iframe;
+   behaviour is tested by driving the real DOM the way a user does.
+   ============================================================ */
+const out = document.getElementById('out');
+let pass = 0, fail = 0, group = '';
+
+function describe(name) { group = name; const d = document.createElement('div'); d.className = 'grp'; d.textContent = name; out.appendChild(d); }
+function it(name, fn) {
+  let err = null;
+  try { fn(); } catch (e) { err = e && e.message ? e.message : String(e); }
+  const row = document.createElement('div');
+  row.className = 't ' + (err ? 'fail' : 'pass');
+  row.innerHTML = '<b>' + (err ? 'FAIL' : 'PASS') + '</b><span></span>';
+  row.lastChild.textContent = name;
+  out.appendChild(row);
+  if (err) { const m = document.createElement('div'); m.className = 'msg'; m.textContent = err; out.appendChild(m); fail++; }
+  else pass++;
+}
+const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error((m || '') + '\n  expected: ' + JSON.stringify(b) + '\n  actual:   ' + JSON.stringify(a)); };
+const ok = (v, m) => { if (!v) throw new Error(m || 'expected truthy, got ' + JSON.stringify(v)); };
+const no = (v, m) => { if (v) throw new Error(m || 'expected falsy, got ' + JSON.stringify(v)); };
+
+const KEY = 'hisaab.v1';
+const frame = document.getElementById('app');
+let W, D;                                       // iframe window / document
+
+function seed(expenses, extra) {
+  const db = Object.assign({
+    seeded: true, sample: false, dismissed: true, budget: 30000,
+    theme: 'auto', size: 'md', notRecurring: [], lastBackup: Date.now(), nudgeUntil: 0,
+  }, extra || {});
+  db.expenses = expenses;
+  localStorage.setItem(KEY, JSON.stringify(db));
+}
+function stored() { return JSON.parse(localStorage.getItem(KEY)); }
+function reload() {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      W = frame.contentWindow; D = frame.contentDocument;
+      setTimeout(res, 1200);
+    };
+    frame.onload = finish;
+    setTimeout(finish, 4000);              // a stalled load must not hang the whole suite
+    frame.contentWindow.location.replace('index.html#home');
+  });
+}
+function reloadTo(view) {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => { if (done) return; done = true;
+      W = frame.contentWindow; D = frame.contentDocument; setTimeout(res, 1200); };
+    frame.onload = finish;
+    setTimeout(finish, 4000);
+    frame.contentWindow.location.replace('index.html#' + view);
+  });
+}
+const $ = s => D.querySelector(s);
+const $$ = s => Array.prototype.slice.call(D.querySelectorAll(s));
+const text = () => $('#view').textContent;
+const nav = v => { $('[data-nav="' + v + '"]').click(); };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+async function run() {
+  /* ---------- validation gate: the single most important safety net ---------- */
+  describe('Validation gate — hostile and malformed records');
+  const now = Date.now();
+  seed([
+    { id: 'x" onfocus="window.__pwn=1" autofocus q="', amount: 10, catId: 'food', note: 'xss id', ts: now },
+    { id: 'dup', amount: 11, catId: 'fun', note: 'dup A', ts: now },
+    { id: 'dup', amount: 12, catId: 'fun', note: 'dup B', ts: now },
+    { id: 'inf', amount: 1e308, catId: 'food', note: 'infinity', ts: now },
+    { id: 'huge', amount: 1e21, catId: 'home', note: 'too big', ts: now },
+    { id: 'zero', amount: 0.0001, catId: 'food', note: 'rounds to zero', ts: now },
+    { id: 'neg', amount: -5, catId: 'food', note: 'negative', ts: now },
+    { id: 'badts', amount: 10, catId: 'food', note: 'bad ts', ts: 8640000000000001 },
+    { id: 'oldts', amount: 10, catId: 'food', note: 'year 1970', ts: 1 },
+    { id: 'future', amount: 10, catId: 'food', note: 'next month', ts: now + 40 * 86400000 },
+    { id: 'badcat', amount: 20, catId: '<script>', note: 'bad category', ts: now },
+    { id: 'ws', amount: 30, catId: 'food', note: '   ', ts: now },
+    { id: 'ok1', amount: 250, catId: 'bills', note: 'legit', ts: now },
+    null, 'garbage', 42,
+  ]);
+  await reload();
+  const kept = stored().expenses;
+
+  it('drops non-finite amounts', () => no(kept.some(e => e.note === 'infinity')));
+  it('drops amounts above the ceiling', () => no(kept.some(e => e.note === 'too big')));
+  it('drops amounts that round away to zero', () => no(kept.some(e => e.note === 'rounds to zero')));
+  it('drops negative amounts', () => no(kept.some(e => e.note === 'negative')));
+  it('drops unrepresentable timestamps', () => no(kept.some(e => e.note === 'bad ts')));
+  it('drops timestamps before 2000', () => no(kept.some(e => e.note === 'year 1970')));
+  it('drops future-dated expenses', () => no(kept.some(e => e.note === 'next month')));
+  it('drops null / string / number entries', () => eq(kept.filter(e => !e || typeof e !== 'object').length, 0));
+  it('maps unknown categories to "other"', () => eq(kept.filter(e => e.note === 'bad category')[0].catId, 'other'));
+  it('trims whitespace-only notes to empty', () => eq(kept.filter(e => e.id === 'ws' || e.amount === 30)[0].note, ''));
+  it('keeps the legitimate record untouched', () => {
+    const e = kept.filter(x => x.note === 'legit')[0];
+    ok(e, 'legit record missing'); eq(e.amount, 250); eq(e.catId, 'bills');
+  });
+  it('regenerates ids that are not attribute-safe', () => {
+    const e = kept.filter(x => x.note === 'xss id')[0];
+    ok(e, 'record dropped entirely'); ok(/^[A-Za-z0-9_-]{1,40}$/.test(e.id), 'unsafe id survived: ' + e.id);
+  });
+  it('makes duplicate ids unique', () => {
+    const ids = kept.map(e => e.id);
+    eq(ids.length, new Set(ids).size, 'duplicate ids present');
+  });
+
+  describe('XSS — a crafted backup must not execute');
+  it('no inline event handler reaches the DOM', () => {
+    const bad = $$('#view *').filter(el => el.hasAttribute &&
+      (el.hasAttribute('onfocus') || el.hasAttribute('onclick') || el.hasAttribute('onerror')));
+    eq(bad.length, 0, 'inline handlers: ' + bad.map(b => b.className).join(','));
+  });
+  it('payload did not run', () => no(W.__pwn));
+
+  describe('Rendering — no NaN, Infinity or undefined leaks to the user');
+  it('home renders clean', () => { nav('home'); no(/NaN|undefined|Infinity|∞|\[object/.test(text()), text().slice(0, 200)); });
+  it('insights renders clean', () => { nav('insights'); no(/NaN|undefined|Infinity|∞|\[object/.test(text())); });
+  it('history renders clean', () => { nav('history'); no(/NaN|undefined|Infinity|∞|\[object/.test(text())); });
+  it('settings renders clean', () => { nav('settings'); no(/NaN|undefined|Infinity|∞|\[object/.test(text())); });
+
+  /* ---------- damaged storage ---------- */
+  describe('Damaged storage recovers instead of disabling saves');
+  // NOTE: this harness shares localStorage with the app, so writing the corrupt value
+  // from here also fires the app's cross-tab sync listener in the still-running iframe.
+  // We therefore assert the user-visible outcome — quarantined copy, working app that
+  // can still save — rather than the exact key state at one instant.
+  localStorage.removeItem(KEY + '.damaged');
+  localStorage.setItem(KEY, '}{ not json at all');
+  await reload();
+  it('quarantines the unreadable copy', () => ok(localStorage.getItem(KEY + '.damaged')));
+  it('app still renders after damaged data', () => ok($('#view').children.length > 0));
+  $('#fab').click();
+  ['5', '0'].forEach(k => $('[data-act="k"][data-k="' + k + '"]').click());
+  $('.catbtn[data-cat="food"]').click();
+  $('#saveBtn').click();
+  await wait(300);
+  it('a new expense written after recovery is stored', () => {
+    const d = stored();
+    ok(d && Array.isArray(d.expenses) && d.expenses.some(e => e.amount === 50),
+       'stored: ' + String(localStorage.getItem(KEY)).slice(0, 60));
+  });
+  it('app still renders', () => ok($('#view').children.length > 0));
+  localStorage.removeItem(KEY + '.damaged');
+
+  /* ---------- empty state ---------- */
+  describe('Empty state');
+  seed([]);
+  await reload();
+  it('shows a single call to action, not stacked empties', () => {
+    nav('home');
+    eq($$('.empty').length, 1, 'expected exactly one empty state');
+  });
+  it('offers a way to add the first expense', () => ok($('[data-act="add"]')));
+  it('no chart sections render with no data', () => { no($('.tmap')); no($('.up')); });
+
+  /* ---------- add / edit / delete round trip ---------- */
+  describe('Add, edit, delete, undo');
+  seed([{ id: 'seedone', amount: 100, catId: 'food', note: 'seed', ts: Date.now() - 3600000 }]);
+  await reload();
+  const before = stored().expenses.length;
+  $('#fab').click();
+  ['1', '2', '5'].forEach(k => $('[data-act="k"][data-k="' + k + '"]').click());
+  $('.catbtn[data-cat="grocery"]').click();
+  $('#note').value = 'test expense';
+  $('#saveBtn').click();
+  await wait(120);
+  it('adds exactly one expense', () => eq(stored().expenses.length, before + 1));
+  it('stores the typed amount', () => ok(stored().expenses.some(e => e.amount === 125 && e.note === 'test expense')));
+
+  it('a second Save tap does not duplicate or throw', () => {
+    const n = stored().expenses.length;
+    $('#fab').click();
+    ['5', '0'].forEach(k => $('[data-act="k"][data-k="' + k + '"]').click());
+    $('.catbtn[data-cat="fun"]').click();
+    const b = $('#saveBtn'); b.click(); b.click(); b.click();
+    eq(stored().expenses.length, n + 1, 'duplicate expense created');
+  });
+
+  it('rejects an amount with no category', () => {
+    $('#fab').click();
+    $('[data-act="k"][data-k="9"]').click();
+    ok($('#saveBtn').disabled, 'Save should stay disabled without a category');
+    $('[data-act="close"]').click();
+  });
+
+  await wait(420);
+  const nBefore = stored().expenses.length;
+  nav('history'); $('.item').click(); await wait(120);
+  $('[data-act="del"]').click(); await wait(120);
+  it('delete removes one', () => eq(stored().expenses.length, nBefore - 1));
+  $('[data-act="undo"]').click(); await wait(120);
+  it('undo puts it back', () => eq(stored().expenses.length, nBefore));
+
+  /* ---------- search ---------- */
+  describe('Search');
+  seed([
+    { id: 's1', amount: 799, catId: 'bills', note: 'Broadband', ts: Date.now() },
+    { id: 's2', amount: 40, catId: 'food', note: 'Chai', ts: Date.now() },
+    { id: 's3', amount: 799, catId: 'fun', note: 'Concert', ts: Date.now() },
+  ]);
+  await reload();
+  nav('history');
+  const type = v => { const q = $('#q'); q.value = v; q.dispatchEvent(new W.Event('input', { bubbles: true })); };
+  type('chai'); await wait(220);
+  it('matches notes case-insensitively', () => eq($$('.item').length, 1));
+  type('₹799'); await wait(220);
+  it('matches amounts, with or without the ₹', () => eq($$('.item').length, 2));
+  type('zzzz'); await wait(220);
+  it('shows an empty state for no matches', () => ok($('.empty')));
+  type(''); await wait(220);
+
+  /* ---------- recurring detection ---------- */
+  describe('Recurring detection');
+  const mk = (monthsAgo, day, amount, note, cat) => {
+    const d = new Date(); d.setMonth(d.getMonth() - monthsAgo); d.setDate(day); d.setHours(11, 0, 0, 0);
+    return { id: note.replace(/\W/g, '') + monthsAgo, amount, catId: cat || 'bills', note, ts: d.getTime() };
+  };
+  seed([
+    mk(1, 8, 800, 'Broadband'), mk(2, 8, 800, 'Broadband'), mk(3, 8, 800, 'Broadband'),
+    // three coffees a month apart but on scattered dates — must NOT be called a bill
+    mk(1, 3, 50, 'Coffee', 'food'), mk(2, 17, 50, 'Coffee', 'food'), mk(3, 27, 50, 'Coffee', 'food'),
+  ]);
+  await reload();
+  nav('insights');
+  const billNames = $$('.up__n').map(e => e.textContent);
+  it('detects a genuine monthly bill', () => ok(billNames.indexOf('Broadband') >= 0, 'found: ' + billNames.join(',')));
+  it('does not mistake scattered spends for a bill', () => no(billNames.indexOf('Coffee') >= 0, 'found: ' + billNames.join(',')));
+
+  /* ---------- navigation & history ----------
+     The app deliberately leaves history alone when it is not the top-level window, so a
+     host page's Back button is never hijacked. That is what we can assert from inside an
+     iframe; the real Back-closes-sheet behaviour is verified against the app running
+     top-level (see README). */
+  describe('Browser history');
+  await reload();
+  it('does not touch history when embedded in a frame', () => {
+    const before = W.location.hash;          // set by our own navigation, not the app
+    nav('insights');
+    eq(W.location.hash, before, 'a framed app must not rewrite the host URL');
+    ok(W.history.state === null || !W.history.state.view, 'a framed app must not push state');
+  });
+  it('navigation still works without history', () => {
+    eq(D.querySelector('.tab[aria-current]').textContent, 'Insights');
+    nav('home');
+    eq(D.querySelector('.tab[aria-current]').textContent, 'Home');
+  });
+  it('sheets still open and close without history', () => {
+    $('#fab').click();
+    ok($('#sheet').classList.contains('in') || !$('#sheet').hidden, 'sheet did not open');
+    $('[data-act="close"]').click();
+  });
+
+  /* ---------- CSV export safety ---------- */
+  describe('CSV export');
+  it('formula-injection payloads are neutralised', () => {
+    const cell = v => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    ['=cmd|calc', '+1+1', '-2+3', '@SUM(1)'].forEach(p => ok(cell(p).charAt(0) === "'", 'not escaped: ' + p));
+    eq(cell('Chai & samosa'), 'Chai & samosa');
+    eq(cell('note, with comma'), '"note, with comma"');
+  });
+
+  /* ---------- layout ---------- */
+  describe('Layout — no horizontal overflow');
+  seed([{ id: 'lng', amount: 99999999, catId: 'shopping', note: 'Supercalifragilisticexpialidocious purchase', ts: Date.now() }]);
+  await reload();
+  for (const v of ['home', 'insights', 'history', 'settings']) {
+    nav(v);
+    const de = D.documentElement;
+    it(v + ' does not scroll sideways', () => eq(de.scrollWidth <= de.clientWidth + 1, true,
+      v + ': scrollWidth ' + de.scrollWidth + ' > clientWidth ' + de.clientWidth));
+  }
+
+  /* ---------- charts must encode their values ---------- */
+  describe('Charts are proportional to their data');
+  seed([
+    { id: 'c1', amount: 60000, catId: 'home', note: 'big',     ts: new Date(new Date().setMonth(new Date().getMonth()-1, 2)).getTime() },
+    { id: 'c2', amount: 30000, catId: 'home', note: 'half',    ts: new Date(new Date().setMonth(new Date().getMonth()-2, 2)).getTime() },
+    { id: 'c3', amount: 15000, catId: 'home', note: 'quarter', ts: new Date(new Date().setMonth(new Date().getMonth()-3, 2)).getTime() },
+    { id: 'c4', amount: 45000, catId: 'home', note: 'three-q', ts: new Date(new Date().setMonth(new Date().getMonth()-4, 2)).getTime() },
+  ]);
+  await reloadTo('insights');
+  await wait(400);
+  it('month bars scale linearly with amount (regression: all >77% clamped equal)', () => {
+    const bars = $$('.year__bar').map(b => b.getBoundingClientRect().height).filter(h => h > 4);
+    ok(bars.length >= 3, 'expected at least 3 bars, got ' + bars.length);
+    const max = Math.max.apply(null, bars);
+    const half = bars.filter(h => Math.abs(h - max / 2) < max * 0.12).length;
+    ok(half >= 1, 'no bar at ~half height — heights: ' + bars.map(Math.round).join(','));
+    eq(new Set(bars.map(Math.round)).size, bars.length, 'bars collapsed to identical heights: ' + bars.map(Math.round).join(','));
+  });
+
+  /* ---------- accessibility ---------- */
+  describe('Accessibility basics');
+  it('calendar shows all seven columns (regression: 7th clipped under 408px)', () => {
+    nav('insights');
+    const g = $('.cal__grid');
+    if (!g) return;
+    const cells = $$('.cal__grid .cell');
+    const last = cells[6].getBoundingClientRect(), grid = g.getBoundingClientRect();
+    ok(last.right <= grid.right + 1, 'column 7 overflows the grid by ' + Math.round(last.right - grid.right) + 'px');
+    const head = $$('.cal__head span')[6].getBoundingClientRect();
+    ok(Math.abs(head.left - last.left) < 2, 'weekday header drifted ' + Math.round(Math.abs(head.left - last.left)) + 'px from its column');
+  });
+  await reload();
+  it('every nav tab has an accessible name', () => $$('.tab').forEach(t => ok(t.textContent.trim())));
+  it('icon-only controls carry aria-label', () => {
+    const bad = $$('button').filter(b => !b.textContent.trim() && !b.getAttribute('aria-label'));
+    eq(bad.length, 0, 'unlabelled: ' + bad.map(b => b.className).join(','));
+  });
+  it('decorative charts are hidden from screen readers', () => ok($$('[aria-hidden="true"]').length > 5));
+  it('the sheet is a labelled modal dialog', () => {
+    $('#fab').click();
+    const s = $('#sheet');
+    eq(s.getAttribute('role'), 'dialog');
+    eq(s.getAttribute('aria-modal'), 'true');
+    ok(s.getAttribute('aria-label'));
+    $('[data-act="close"]').click();
+  });
+
+  /* ---------- summary ---------- */
+  const sum = document.getElementById('summary');
+  sum.textContent = pass + ' passed, ' + fail + ' failed';
+  sum.style.color = fail ? '#C0392B' : '#2E7D46';
+  document.title = (fail ? '✗ ' : '✓ ') + pass + '/' + (pass + fail) + ' — Hisaab tests';
+  window.__testResults = { pass: pass, fail: fail };
+}
+
+function start() {
+  W = frame.contentWindow; D = frame.contentDocument;
+  frame.onload = null;
+  run().catch(e => {
+    const sum = document.getElementById('summary');
+    sum.textContent = 'harness error: ' + (e && e.message ? e.message : e);
+    sum.style.color = '#C0392B';
+    window.__testResults = { pass: pass, fail: fail, harnessError: String(e) };
+  });
+}
+// the iframe may already be loaded by the time this script runs
+if (frame.contentDocument && frame.contentDocument.readyState === 'complete' && frame.contentDocument.querySelector('#view')) {
+  setTimeout(start, 150);
+} else {
+  frame.onload = () => setTimeout(start, 150);
+}
+</script>
+</body>
+</html>

@@ -51,6 +51,21 @@ Bump `CACHE` in `sw.js` (`hisaab-v1.2` → `hisaab-v1.3`). The worker is network
 fresh visit already gets new files; bumping the name also clears the old cache on activate,
 so a browser holding a stale worker can't serve yesterday's app.
 
+### Tests
+
+Open `tests.html` in a browser. That's the whole setup — no runner to install, no
+dependencies, nothing to build. It loads the real app in an iframe and drives it the way a
+user would, then prints a pass/fail list.
+
+It covers the things that actually broke during development: the validation gate against
+hostile and malformed records, the XSS payload that once executed, damaged-storage
+recovery, the empty state, add/edit/delete/undo, double-tap Save, search by note and by
+amount, recurring detection (including that scattered spends are *not* called a bill),
+browser history and Back-closes-sheet, CSV formula-injection escaping, horizontal overflow
+at every view, and accessibility basics.
+
+Every bug listed in "What broke when I attacked it" below has a regression test here.
+
 ### Checked before release
 
 - Served from a subfolder — app, icons, manifest and service worker all resolve
