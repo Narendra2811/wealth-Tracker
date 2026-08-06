@@ -662,10 +662,12 @@
       const pacePct = dayNo / dim;
       const state = pct > 1 ? 'over' : (pct > pacePct * 1.08 ? 'watch' : 'ok');
       const remaining = DB.budget - spent;
+      // "ahead of pace" sounds like praise; it means spending too fast.
       const verdict = state === 'over'
-        ? `Over by ${money(Math.abs(remaining))}`
-        : (state === 'watch' ? 'Running ahead of pace' : (pct > pacePct * 0.92 ? 'Right on pace' : 'Comfortably under pace'));
-      const perDay = left > 0 && remaining > 0 ? `${money(remaining / left)}/day for ${left} more ${left===1?'day':'days'}` : (left > 0 ? `${left} ${left===1?'day':'days'} left this month` : 'Last day of the month');
+        ? `Over budget by ${money(Math.abs(remaining))}`
+        : (state === 'watch' ? 'Spending faster than the month'
+           : (pct > pacePct * 0.92 ? 'On track for the month' : 'Comfortably under budget'));
+      const perDay = left > 0 && remaining > 0 ? `${money(remaining / left)} a day left for ${left} more ${left===1?'day':'days'}` : (left > 0 ? `${left} ${left===1?'day':'days'} left this month` : 'Last day of the month');
       budgetBlock = `<div class="budget" data-state="${state}">
         <div class="budget__meta">
           <span>Monthly budget</span>
@@ -988,7 +990,7 @@
       cells += `<button class="cell ${future?'cell--future':''} ${sameDay(dt, today)?'is-today':''}" data-lvl="${future?0:lvl(v)}"
         data-act="open-day" data-day="${dayKey(dt)}" style="transition-delay:${Math.min(d*9,300)}ms"
         ${future?'tabindex="-1"':''}
-        aria-label="${d} ${MONS_S[m]}: ${future ? 'not yet' : (v ? money(v) : 'nothing spent')}">
+        aria-label="${d} ${MONS_S[m]}: ${future ? 'still to come' : (v ? money(v) : 'nothing spent')}">
         <span class="cell__d">${d}</span>${v ? `<span class="cell__v money">${compact(v)}</span>` : ''}</button>`;
     }
 
@@ -1468,14 +1470,18 @@
           <span class="month-sep__l"></span><span class="month-sep__v money">${money(monthTotals.get(g.mk))}</span></div>`;
       }
       const cats = byCategory(g.items);
-      html += `<div class="day">
+      // One card per day with hairline dividers, not one card per expense. A list of
+      // 283 rows should read as a ledger, not as 283 floating tiles.
+      html += `<section class="day">
         <div class="day__head">
           <span class="day__l"><span class="day__t">${relDay(g.ts)}</span><span class="day__w">${g.items.length} ${g.items.length===1?'expense':'expenses'}</span></span>
           <span class="day__v money">${money(g.total)}</span>
         </div>
-        <div class="day__mini" aria-hidden="true">${cats.map(c => `<i style="--c:${cc(c.catId)};flex:${Math.max(c.amount,1)}"></i>`).join('')}</div>
-        <div class="rail">${g.items.map(itemRow).join('')}</div>
-      </div>`;
+        <div class="daycard">
+          <div class="day__mini" aria-hidden="true">${cats.map(c => `<i style="--c:${cc(c.catId)};flex:${Math.max(c.amount,1)}"></i>`).join('')}</div>
+          ${g.items.map(itemRow).join('')}
+        </div>
+      </section>`;
     });
 
     const more = list.length > S.limit
@@ -1592,12 +1598,9 @@
     }
 
     // topbar mini-total
-    if (S.view === 'home' || S.view === 'insights') {
-      const [f,t] = thisMonth();
-      const v = sum(inRange(f,t).map(e => e.amount));
-      topRight.innerHTML = `<button class="mini-total" data-act="go-insights">
-        <b class="money">${compact(v)}</b><span>${MONS_S[new Date().getMonth()]} total</span></button>`;
-    } else topRight.innerHTML = '';
+    // the month total is stated in full on Home and Insights already; repeating it in
+    // the header made the same figure appear three times on one screen
+    topRight.innerHTML = '';
 
     $$('.tab').forEach(b => {
       if (b.dataset.nav === S.view) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');

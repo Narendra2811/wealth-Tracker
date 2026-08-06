@@ -58,9 +58,34 @@ input{-webkit-tap-highlight-color:transparent}
   --sh-fab:0 3px 8px rgba(120,72,10,.28), 0 14px 30px -8px rgba(120,72,10,.42);
   --hair:inset 0 1px 0 rgba(255,255,255,.7);
 
+  /* ---- type scale -------------------------------------------------------
+     A fixed ratio instead of 14 ad-hoc sizes. Every piece of text in the app
+     resolves to one of these, which is most of what separates a designed
+     interface from an assembled one. */
+  --t-micro: .715rem;    /* labels, legends, meta            */
+  --t-small: .82rem;     /* secondary copy                   */
+  --t-body:  .95rem;     /* default                          */
+  --t-lead:  1.08rem;    /* emphasised body, list titles     */
+  --t-title: 1.32rem;    /* section headings                 */
+  --t-head:  1.75rem;    /* screen headings                  */
+  --t-hero:  clamp(3.4rem, 17vw, 4.6rem);   /* the one number that matters */
+
+  --tracking-tight: -.03em;
+  --tracking-hero:  -.055em;
+  --tracking-label:  .05em;
+
+  /* ---- spacing: one 4px rhythm, no arbitrary values -------------------- */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+
+  /* ---- surfaces: four levels, each with a job -------------------------- */
+  --e-canvas: none;                                   /* the page itself     */
+  --e-quiet:  inset 0 0 0 1px var(--line);            /* grouped, not raised */
+  --e-raised: 0 1px 2px rgba(38,29,15,.045), 0 8px 24px -12px rgba(38,29,15,.16);
+  --e-over:   0 2px 6px rgba(38,29,15,.07), 0 32px 60px -24px rgba(38,29,15,.30);
+
   --r-xs:10px; --r-sm:14px; --r:20px; --r-lg:26px; --r-xl:32px; --r-full:999px;
   --tap:56px;
-  --pad:18px;
+  --pad:20px;
   --maxw:640px;
 
   --ease:cubic-bezier(.22,1,.36,1);
@@ -183,7 +208,7 @@ html[data-theme="dark"] .ambient__grain{mix-blend-mode:overlay;opacity:.4}
 .mini-total span{font-size:.63rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);line-height:1}
 
 /* ---------- view / layout ---------- */
-.view{padding-top:6px;padding-bottom:132px;min-height:60vh}
+.view{padding-top:var(--s1);padding-bottom:calc(150px + env(safe-area-inset-bottom));min-height:60vh}
 .view:focus,.view:focus-visible{outline:none}
 
 /* spans used as block-level pieces — without this they ignore width/height/margin */
@@ -192,22 +217,22 @@ html[data-theme="dark"] .ambient__grain{mix-blend-mode:overlay;opacity:.4}
 .tile__n,.tile__v,.tile__p,.rrow__name,.rrow__meta,.detail__t,.detail__s,
 .day__t,.day__w,.month-sep__t,.month-sep__v,.flow__label,.empty__t,.empty__s,
 .cell__d,.cell__v,.toast__t,.sec__title,.sec__sub,.li__b,.big__b,.ins__b,.banner__b{display:block}
-.stack{display:flex;flex-direction:column;gap:14px}
-.sec{margin-top:26px}
+.stack{display:flex;flex-direction:column;gap:var(--s4)}
+.sec{margin-top:var(--s6)}
 .sec:first-child{margin-top:0}
-.sec__head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 12px;margin-bottom:11px;padding-inline:2px;flex-wrap:wrap}
+.sec__head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 12px;margin-bottom:var(--s3);padding-inline:2px;flex-wrap:wrap}
 .sec__head>div:first-child{flex:1 1 min(100%,220px)}
-.sec__title{font-size:1.09rem;font-weight:660;letter-spacing:-.028em}
-.sec__sub{font-size:.8rem;color:var(--ink-3);margin-top:1px;letter-spacing:-.005em}
+.sec__title{font-size:var(--t-title);font-weight:680;letter-spacing:var(--tracking-tight);line-height:1.2}
+.sec__sub{font-size:var(--t-small);color:var(--ink-3);margin-top:3px;letter-spacing:-.005em}
 /* these label what you are looking at, so they were the worst possible text to make
    tiny, pale and wide-tracked — bigger, darker, tighter */
-.eyebrow{font-size:.73rem;font-weight:700;letter-spacing:.055em;text-transform:uppercase;color:var(--ink-2)}
+.eyebrow{font-size:var(--t-micro);font-weight:700;letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--ink-2)}
 
 .card{
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
-  box-shadow:var(--sh-2),var(--hair);padding:17px;position:relative;overflow:hidden;
+  box-shadow:var(--e-raised);padding:var(--s5) var(--s4);position:relative;overflow:hidden;
 }
-.card--flat{box-shadow:var(--sh-1),var(--hair)}
+.card--flat{box-shadow:none}
 .card--pad-0{padding:0}
 
 .money{font-variant-numeric:tabular-nums;letter-spacing:-.035em;font-feature-settings:"tnum" 1}
@@ -223,17 +248,26 @@ html[data-theme="dark"] .ambient__grain{mix-blend-mode:overlay;opacity:.4}
 .ic{width:22px;height:22px;fill:none;stroke:currentColor;flex:none}
 
 /* ---------- greeting ---------- */
-.greet{padding:14px 4px 4px}
-.greet__hi{font-size:1.6rem;font-weight:680;letter-spacing:-.038em;line-height:1.12}
-.greet__date{font-size:.87rem;color:var(--ink-3);margin-top:3px;font-weight:500}
+.greet{padding:var(--s5) 2px var(--s1)}
+.greet__hi{font-size:var(--t-head);font-weight:700;letter-spacing:-.04em;line-height:1.08}
+.greet__date{font-size:var(--t-small);color:var(--ink-3);margin-top:5px;font-weight:520}
 
 /* ---------- HERO ---------- */
+/* ---------------------------------------------------------------------------
+   The hero is not a card. Putting the day's number in a white box next to five
+   other white boxes gives it no more weight than a settings row. It sits on the
+   canvas at display size and everything below it is quieter — one loud thing,
+   then calm, which is what makes a screen feel composed rather than assembled.
+   --------------------------------------------------------------------------- */
 .hero{
-  position:relative;border-radius:var(--r-lg);padding:20px 19px 17px;overflow:hidden;
-  background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh-3),var(--hair);
+  position:relative;padding:var(--s2) 2px var(--s5);overflow:visible;
+  background:none;border:0;box-shadow:none;
 }
-.hero__wash{position:absolute;inset:0;pointer-events:none;opacity:.9;
-  background:radial-gradient(120% 90% at 100% 0%, var(--wash), transparent 62%)}
+.hero__wash{
+  position:absolute;left:-24%;right:-24%;top:-32%;height:150%;pointer-events:none;
+  opacity:.85;z-index:-1;filter:blur(38px);
+  background:radial-gradient(52% 46% at 50% 40%, var(--wash), transparent 70%);
+}
 .hero[data-mood="calm"]{--wash:rgba(46,125,70,.13)}
 .hero[data-mood="steady"]{--wash:rgba(176,114,31,.14)}
 .hero[data-mood="heavy"]{--wash:rgba(192,57,43,.13)}
@@ -241,7 +275,7 @@ html[data-theme="dark"] .hero[data-mood="calm"]{--wash:rgba(95,206,132,.13)}
 html[data-theme="dark"] .hero[data-mood="heavy"]{--wash:rgba(240,121,106,.13)}
 .hero>*{position:relative}
 
-.hero__top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.hero__top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-right:2px}
 .mood{
   display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:var(--r-full);
   font-size:.72rem;font-weight:680;letter-spacing:.02em;
@@ -252,10 +286,12 @@ html[data-theme="dark"] .hero[data-mood="heavy"]{--wash:rgba(240,121,106,.13)}
 .mood[data-mood="heavy"]{background:var(--bad-soft);color:var(--bad)}
 
 .hero__amount{
-  margin-top:9px;display:flex;align-items:baseline;gap:2px;
-  font-size:clamp(2.9rem,13vw,3.6rem);font-weight:700;letter-spacing:-.052em;line-height:1;
+  margin-top:var(--s2);display:flex;align-items:baseline;gap:3px;
+  font-size:var(--t-hero);font-weight:700;letter-spacing:var(--tracking-hero);line-height:.92;
 }
-.hero__amount .cur{font-size:.52em;font-weight:640;letter-spacing:-.02em;color:var(--ink-2);transform:translateY(-.06em)}
+/* the rupee mark reads as a unit, not a character in the number */
+.hero__amount .cur{font-size:.38em;font-weight:620;letter-spacing:-.01em;color:var(--ink-3);
+  transform:translateY(-.52em);margin-right:2px}
 .hero__cmp{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:11px}
 
 .delta{
@@ -269,7 +305,7 @@ html[data-theme="dark"] .hero[data-mood="heavy"]{--wash:rgba(240,121,106,.13)}
 .cmp-note{font-size:.79rem;color:var(--ink-3);font-weight:500}
 
 /* rhythm bars */
-.rhythm{margin-top:22px;position:relative}
+.rhythm{margin-top:var(--s5);position:relative}
 .rhythm__plot{display:flex;align-items:flex-end;gap:6px;height:84px;position:relative;padding-top:16px}
 .rhythm__avg{position:absolute;left:0;right:0;height:0;border-top:1.5px dashed var(--ink-4);pointer-events:none;z-index:1}
 .rbar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;position:relative;background:none;padding:0;border-radius:8px}
@@ -307,7 +343,7 @@ html[data-theme="dark"] .hero[data-mood="heavy"]{--wash:rgba(240,121,106,.13)}
 .rhythm__foot b{font-weight:660;color:var(--ink-2);font-variant-numeric:tabular-nums}
 
 /* flow bar */
-.flow{margin-top:17px;padding-top:15px;border-top:1px solid var(--line)}
+.flow{margin-top:var(--s5);padding-top:var(--s4);border-top:1px solid var(--line)}
 .flow__label{font-size:.73rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-2);margin-bottom:9px}
 .flow__bar{display:flex;gap:3px;height:16px;border-radius:var(--r-full);overflow:hidden}
 .flow__seg{background:var(--c);border-radius:var(--r-full);width:0;transition:width .85s var(--ease);min-width:5px}
@@ -326,7 +362,7 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 /* ---------- budget / month card ---------- */
 .month-row{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
 .month-row>div:first-child{min-width:0}
-.month-amt{font-size:clamp(1.4rem,7vw,1.85rem)}
+.month-amt{font-size:clamp(1.5rem,7vw,var(--t-head))}
 .month-amt{font-size:1.85rem;font-weight:700;letter-spacing:-.042em;line-height:1.05}
 .month-amt .cur{font-size:.62em;font-weight:640;color:var(--ink-2)}
 
@@ -405,7 +441,7 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 .rrow:hover{background:var(--surface-2)}
 .rrow:active{background:var(--surface-3)}
 .cat-ic{
-  width:42px;height:42px;border-radius:13px;display:grid;place-items:center;flex:none;
+  width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;
   background:var(--c-soft);color:var(--c);
 }
 .cat-ic .ic{width:22px;height:22px}
@@ -415,12 +451,12 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 .cat-ic--lg .ic{width:26px;height:26px}
 .rrow__b{min-width:0}
 .rrow__n{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.rrow__name{font-size:.93rem;font-weight:600;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rrow__name{font-size:var(--t-body);font-weight:600;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rrow__meta{font-size:.72rem;color:var(--ink-3);font-variant-numeric:tabular-nums;font-weight:560;
   flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rrow__t{height:7px;border-radius:var(--r-full);background:var(--track);margin-top:7px;overflow:hidden}
 .rrow__f{height:100%;border-radius:var(--r-full);background:var(--c);width:0;transition:width .85s var(--ease)}
-.rrow__v{font-size:.98rem;font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:right;max-width:44%}
+.rrow__v{font-size:var(--t-body);font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:right;max-width:44%}
 
 /* ---------- biggest / highlight ---------- */
 .big{display:flex;align-items:center;gap:14px}
@@ -446,9 +482,9 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 .up__day b{font-size:1rem;font-weight:700;letter-spacing:-.03em;line-height:1.1;font-variant-numeric:tabular-nums}
 .up__day span{font-size:.6rem;font-weight:660;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);line-height:1}
 .up__b{min-width:0}
-.up__n{display:block;font-size:.9rem;font-weight:600;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.up__n{display:block;font-size:var(--t-body);font-weight:600;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .up__s{display:block;font-size:.74rem;color:var(--ink-3);margin-top:2px;font-weight:520}
-.up__v{font-size:.98rem;font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:right}
+.up__v{font-size:var(--t-body);font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:right}
 
 /* ---------- month-by-month trend ---------- */
 .year{display:flex;align-items:flex-end;gap:5px;height:152px;position:relative}
@@ -515,14 +551,14 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 .stat span{font-size:.71rem;color:var(--ink-3);font-weight:560}
 
 /* ---------- insight cards ---------- */
-.ins{display:flex;gap:13px;align-items:flex-start;padding:15px 16px;border-radius:var(--r);
-  background:var(--surface);border:1px solid var(--line);box-shadow:var(--sh-1),var(--hair)}
+.ins{display:flex;gap:13px;align-items:flex-start;padding:var(--s4);border-radius:var(--r);
+  background:var(--surface);border:1px solid var(--line);box-shadow:none}
 .ins__ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--c-soft);color:var(--c)}
 .ins__ic .ic{width:20px;height:20px}
 .ins__b{min-width:0}
-.ins__h{font-size:.93rem;font-weight:640;letter-spacing:-.018em;line-height:1.34}
+.ins__h{font-size:var(--t-body);font-weight:640;letter-spacing:-.018em;line-height:1.34}
 .ins__h b{font-weight:720;color:var(--c2,var(--ink))}
-.ins__s{font-size:.79rem;color:var(--ink-3);margin-top:3px;line-height:1.4;font-weight:500}
+.ins__s{font-size:var(--t-micro);color:var(--ink-3);margin-top:3px;line-height:1.4;font-weight:500}
 .ins-grid{display:flex;flex-direction:column;gap:11px}
 
 /* ---------- calendar heat ---------- */
@@ -536,7 +572,10 @@ html[data-theme="dark"] .hero__empty p{color:var(--ink-2)}
 }
 .cell.in{opacity:1}
 .cell--void{background:none;pointer-events:none}
-.cell--future{background:none;box-shadow:inset 0 0 0 1.5px var(--line);color:var(--ink-4);opacity:.65;pointer-events:none}
+/* a day that hasn't happened is drawn as absence; a day you spent nothing on is a
+   real, recorded zero and keeps its cell */
+.cell--future{background:none;box-shadow:none;color:var(--ink-4);opacity:.4;pointer-events:none}
+.cell[data-lvl="0"]:not(.cell--future){background:var(--track);box-shadow:none}
 .cell[data-lvl="1"]{background:var(--h1);color:var(--hc1)}
 .cell[data-lvl="2"]{background:var(--h2);color:var(--hc1)}
 .cell[data-lvl="3"]{background:var(--h3);color:#1A1206}
@@ -572,36 +611,39 @@ html[data-theme="dark"] .cal{--h1:rgba(231,172,85,.18);--h2:rgba(231,172,85,.36)
 .shift__bar.now{opacity:1}
 
 /* ---------- timeline / history ---------- */
-.day{margin-top:22px}
-.day:first-child{margin-top:4px}
+.day{margin-top:var(--s5)}
+.day:first-child{margin-top:var(--s2)}
 .day__head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 4px 10px;
   position:sticky;top:calc(64px + env(safe-area-inset-top));z-index:20;
   background:linear-gradient(var(--bg) 62%,transparent)}
 .day__l{display:flex;align-items:baseline;gap:9px;min-width:0}
-.day__t{font-size:.95rem;font-weight:660;letter-spacing:-.022em;white-space:nowrap}
+.day__t{font-size:var(--t-body);font-weight:680;letter-spacing:var(--tracking-tight);white-space:nowrap}
 .day__w{font-size:.75rem;color:var(--ink-3);font-weight:540}
-.day__v{font-size:.9rem;font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.028em;flex:none}
-.day__mini{display:flex;gap:2px;height:5px;border-radius:var(--r-full);overflow:hidden;margin:0 4px 11px}
+.day__v{font-size:var(--t-body);font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.028em;flex:none}
+.day__mini{display:flex;gap:1px;height:3px;overflow:hidden;margin:0;opacity:.9}
 .day__mini i{background:var(--c);border-radius:var(--r-full);min-width:4px}
 
 .rail{position:relative;padding-left:0}
+/* rows live inside a day card, separated by hairlines rather than by gaps */
+.daycard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden;box-shadow:var(--e-raised)}
 .item{
-  display:grid;grid-template-columns:46px 1fr auto;align-items:center;gap:13px;width:100%;text-align:left;
-  padding:11px 13px;border-radius:var(--r-sm);background:var(--surface);border:1px solid var(--line);
-  box-shadow:var(--sh-1);min-height:var(--tap);transition:transform .16s var(--ease),box-shadow .2s;
+  display:grid;grid-template-columns:42px 1fr auto;align-items:center;gap:var(--s3);width:100%;text-align:left;
+  padding:var(--s3) var(--s4);background:none;border:0;border-radius:0;
+  box-shadow:none;min-height:0;transition:background .16s;
 }
-.item+.item{margin-top:7px}
-.item:hover{box-shadow:var(--sh-2)}
-.item:active{transform:scale(.985)}
+.item+.item{margin-top:0;border-top:1px solid var(--line)}
+.item:hover{background:var(--surface-2)}
+.item:active{background:var(--surface-3)}
 .item__b{min-width:0}
-.item__t{font-size:.93rem;font-weight:600;letter-spacing:-.016em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
-.item__s{font-size:.75rem;color:var(--ink-3);margin-top:2px;font-weight:520;display:flex;align-items:center;gap:6px}
+.item__t{font-size:var(--t-body);font-weight:600;letter-spacing:-.016em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
+.item__s{font-size:var(--t-micro);color:var(--ink-3);margin-top:2px;font-weight:520;display:flex;align-items:center;gap:6px}
 .item__s i{width:3px;height:3px;border-radius:50%;background:var(--ink-4);display:block;flex:none}
-.item__v{font-size:1.02rem;font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.032em;text-align:right}
+.item__v{font-size:var(--t-body);font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.032em;text-align:right}
 .item.is-new{animation:pop .6s var(--spring)}
 @keyframes pop{0%{transform:scale(.94);box-shadow:0 0 0 0 var(--accent-soft)}45%{box-shadow:0 0 0 8px var(--accent-soft)}100%{transform:scale(1);box-shadow:0 0 0 0 transparent}}
 
-.month-sep{display:flex;align-items:center;gap:12px;margin:30px 4px 6px}
+.month-sep{display:flex;align-items:center;gap:var(--s3);margin:var(--s6) 4px var(--s2)}
 .month-sep:first-child{margin-top:8px}
 .month-sep__t{font-size:.72rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
 .month-sep__l{flex:1;height:1px;background:var(--line)}
@@ -613,7 +655,7 @@ html[data-theme="dark"] .cal{--h1:rgba(231,172,85,.18);--h2:rgba(231,172,85,.36)
 .searchbar .ic{width:19px;height:19px;color:var(--ink-3);stroke-width:1.9}
 .searchbar input{flex:1;min-width:0;font-size:.95rem;font-weight:520;letter-spacing:-.012em}
 .searchbar input::placeholder{color:var(--ink-4)}
-.chips{display:flex;gap:8px;overflow-x:auto;padding:3px 4px 4px;margin-inline:-4px;scrollbar-width:none}
+.chips{display:flex;gap:var(--s2);overflow-x:auto;padding:2px 4px 3px;margin-inline:-4px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
 .chip{
   display:inline-flex;align-items:center;gap:7px;height:42px;padding:0 14px;border-radius:var(--r-full);
@@ -672,6 +714,11 @@ html[data-theme="dark"] .btn--primary{color:#1A1206}
 .btn[disabled] .ic{opacity:.7}
 
 /* ---------- tabbar + fab ---------- */
+/* content used to run under a hard edge, so every screen ended mid-sentence */
+.tabbar::before{
+  content:'';position:absolute;left:0;right:0;bottom:100%;height:36px;pointer-events:none;
+  background:linear-gradient(to top, var(--bg), transparent);
+}
 .tabbar{
   position:fixed;left:50%;transform:translateX(-50%);bottom:0;z-index:60;
   width:min(100%,var(--maxw));display:grid;align-items:center;
@@ -722,7 +769,7 @@ html[data-theme="dark"] .scrim{background:rgba(0,0,0,.6)}
      units matter on mobile, where the browser chrome shrinks the visible area */
   width:min(100%,var(--maxw));max-height:94vh;max-height:94dvh;display:flex;flex-direction:column;
   background:var(--surface);border-radius:var(--r-xl) var(--r-xl) 0 0;
-  box-shadow:0 -8px 60px -12px rgba(30,20,8,.4);border:1px solid var(--line);border-bottom:0;
+  box-shadow:var(--e-over);border:1px solid var(--line);border-bottom:0;
   transition:transform .42s var(--ease);overflow:hidden;
 }
 .sheet.in{transform:translate(-50%,0)}
@@ -814,14 +861,14 @@ html[data-theme="dark"] .scrim{background:rgba(0,0,0,.6)}
 .detail__acts .btn{flex:1}
 
 /* ---------- settings ---------- */
-.list{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh-1),var(--hair)}
+.list{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:none}
 .li{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;padding:14px 16px;
   min-height:var(--tap);width:100%;text-align:left;flex-wrap:wrap}
 .li__b{min-width:min(100%,180px);flex:1 1 auto}
 .li+.li{border-top:1px solid var(--line)}
 .li__b{min-width:0}
-.li__t{font-size:.92rem;font-weight:600;letter-spacing:-.015em}
-.li__s{font-size:.77rem;color:var(--ink-3);margin-top:2px;line-height:1.35}
+.li__t{font-size:var(--t-body);font-weight:600;letter-spacing:-.015em}
+.li__s{font-size:var(--t-micro);color:var(--ink-3);margin-top:2px;line-height:1.35}
 .li--btn{transition:background .18s}
 .li--btn:hover{background:var(--surface-2)}
 .li--btn:active{background:var(--surface-3)}
@@ -867,9 +914,12 @@ kbd{
   font-size:.82rem;font-weight:660;flex:none}
 html[data-theme="dark"] .toast button{background:rgba(0,0,0,.22)}
 
-/* ---------- entrance ---------- */
-.rise{opacity:0;transform:translateY(12px);animation:rise .55s var(--ease) forwards}
+/* ---------- motion ----------
+   One curve for everything, three durations. Content enters by rising a short
+   distance — far enough to read as arriving, short enough not to be a performance. */
+.rise{opacity:0;transform:translateY(10px);animation:rise .5s var(--ease) forwards}
 @keyframes rise{to{opacity:1;transform:none}}
+.sec.rise{animation-duration:.55s}
 
 /* ---------- wide ---------- */
 @media (min-width:900px){
@@ -970,3 +1020,46 @@ html[data-theme="dark"] .tile{color:#14110C}
   .tmap{height:clamp(250px,26vw,330px)}
   .trend{height:clamp(132px,15vw,190px)}
 }
+
+/* ===========================================================================
+   THE LEDGER
+   Hisaab means reckoning, and the thing it is named after is the bahi-khata:
+   a ruled book where every entry sits on a line and every amount lands in the
+   same right-hand column, so the eye can run down the money without reading a
+   word. That is the app's identity, not a decorative accent — it gives the
+   layout its rhythm and makes figures scannable, which is the whole premise.
+   =========================================================================== */
+
+/* Amounts share one right margin and one set of figures across every list, so a
+   column forms down the page exactly as it does in a ruled book. */
+.item__v, .rrow__v, .up__v, .day__v, .cmp__v, .wk__v, .stat b,
+.month-sep__v, .big__v, .split__key b{
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum" 1, "ss01" 1;
+}
+
+/* The entry line. A ruled page is hairlines, not floating tiles — the rule runs
+   the full width of the leaf and the amount sits against the right edge. */
+.daycard .item{ position:relative; }
+.daycard .item + .item{ border-top:1px solid var(--line); }
+
+/* the running-total line at the head of each day, as in a ledger's day heading */
+.day__head{
+  border-bottom:1px solid var(--line-2);
+  padding-bottom:var(--s2);
+  margin-bottom:var(--s2);
+  background:linear-gradient(var(--bg) 62%, transparent);
+}
+.day__t{ letter-spacing:var(--tracking-tight); }
+.day__v{ font-weight:700; }
+
+/* Section headings are ruled off rather than boxed, so the page reads as one
+   continuous leaf instead of a stack of unrelated cards. */
+.sec__head{
+  border-bottom:1px solid var(--line);
+  padding-bottom:var(--s3);
+}
+
+/* The month divider in History already behaves like a ledger's month rule; make the
+   figure sit hard against the right margin with the others. */
+.month-sep__v{ font-weight:700; color:var(--ink); }

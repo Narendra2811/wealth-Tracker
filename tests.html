@@ -315,15 +315,31 @@ async function run() {
     { id: 'c3', amount: 15000, catId: 'home', note: 'quarter', ts: new Date(new Date().setMonth(new Date().getMonth()-3, 2)).getTime() },
     { id: 'c4', amount: 45000, catId: 'home', note: 'three-q', ts: new Date(new Date().setMonth(new Date().getMonth()-4, 2)).getTime() },
   ]);
-  await reloadTo('insights');
-  await wait(400);
-  it('month bars scale linearly with amount (regression: all >77% clamped equal)', () => {
-    const bars = $$('.year__bar').map(b => b.getBoundingClientRect().height).filter(h => h > 4);
-    ok(bars.length >= 3, 'expected at least 3 bars, got ' + bars.length);
-    const max = Math.max.apply(null, bars);
-    const half = bars.filter(h => Math.abs(h - max / 2) < max * 0.12).length;
-    ok(half >= 1, 'no bar at ~half height — heights: ' + bars.map(Math.round).join(','));
-    eq(new Set(bars.map(Math.round)).size, bars.length, 'bars collapsed to identical heights: ' + bars.map(Math.round).join(','));
+  // Assert the height the app *specifies*, not the height the browser has animated to.
+  // The bars transition in over 0.85s, and CSS transitions do not advance in a window
+  // that is not producing frames — so measuring the rendered box tests the animation
+  // engine, not the maths. The specified percentage is the thing under test.
+  await wait(600);
+  D = frame.contentDocument; W = frame.contentWindow;
+  nav('insights');
+  let pct = [];
+  for (let i = 0; i < 20; i++) {
+    D = frame.contentDocument;
+    pct = $$('.year__bar').map(b => parseFloat(b.style.height) || 0);
+    if (pct.length >= 4 && Math.max.apply(null, pct) > 0) break;
+    await wait(150);
+  }
+  it('month bars are proportional to amount (regression: all >77% clamped equal)', () => {
+    ok(pct.length >= 4, 'got ' + pct.length + ' bars');
+    // seeded 60k / 45k / 30k / 15k -> must be 100 / 75 / 50 / 25 percent
+    const sorted = pct.filter(p => p > 0).sort((a, b) => b - a);
+    eq(Math.round(sorted[0]), 100, 'largest bar should be full height');
+    eq(Math.round(sorted[1]), 75,  '45,000 against 60,000 should be 75%');
+    eq(Math.round(sorted[2]), 50,  '30,000 against 60,000 should be 50%');
+    eq(Math.round(sorted[3]), 25,  '15,000 against 60,000 should be 25%');
+  });
+  it('every bar sits in its own track so it cannot be flex-shrunk', () => {
+    eq($$('.year__track').length, $$('.year__bar').length);
   });
 
   /* ---------- accessibility ---------- */
