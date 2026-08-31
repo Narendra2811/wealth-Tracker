@@ -44,6 +44,42 @@
   const esc = s => String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const uid = () => 'e' + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4);
 
+  /**
+   * Ids for records that other records point at — accounts, people, ledger entries.
+   * Minted once and never rewritten. sanitise() renaming a duplicate *expense* id is
+   * a harmless repair; doing the same to a referenced id would silently orphan every
+   * pointer at it, with no error anywhere. randomUUID is 36 chars of [0-9a-f-],
+   * which ID_OK already admits.
+   */
+  const nid = () => (self.crypto && self.crypto.randomUUID)
+    ? self.crypto.randomUUID()
+    : 'x' + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2,6);
+
+  /**
+   * Escape-by-default tagged template. esc() is correct, but it is applied by hand at
+   * 40-odd call sites, and every string the ledger introduces — an account name, a
+   * relative's name — arrives from a text input. One forgotten esc() is the XSS this
+   * app has already had once. Use htm`` for all of it; wrap a value in trusted() to
+   * opt out, deliberately and visibly.
+   */
+  const trusted = s => ({ __html: String(s == null ? '' : s) });
+  function htm(strings) {
+    let out = strings[0];
+    for (let i = 1; i < arguments.length; i++) {
+      const v = arguments[i];
+      out += ((v && v.__html !== undefined) ? v.__html : esc(v)) + strings[i];
+    }
+    return out;
+  }
+
+  /* A person's or account's name is free text that lands in markup. Angle brackets are
+     rejected at the gate, because no real name has one and refusing them is cheaper than
+     trusting every sink downstream. Apostrophes and ampersands are NOT rejected — Ba'ji,
+     D'Souza and "Ma & Papa" are real names people will type, and esc() already renders
+     them harmless in both text and quoted attributes. Refusing a person's actual name is
+     its own kind of bug. */
+  const NAME_BAD = /[<>]/;
+
   /* ---- hard limits. Anything outside these is corruption or an attack, not a spend ---- */
   const MAX_AMOUNT = 1e9;                        // ₹100 crore
   const MIN_TS = Date.UTC(2000, 0, 1);
@@ -86,6 +122,143 @@
       catId: CAT[e.catId] ? e.catId : 'other',
       note: clipText(e.note, 60),
       ts: ts,
+      // Which account it was paid from. This gate builds a *fresh* object, so any
+      // field not listed here is silently dropped — that is exactly how an account
+      // would go missing from every expense. Shape is checked here; whether the id
+      // still resolves to a real account is sanitise()'s job, once accounts are clean.
+      acc: (e.acc != null && ID_OK.test(String(e.acc))) ? String(e.acc) : null,
+    };
+  }
+
+  /* ============ accounts, moves, people, ledger ============
+     One gate each, same discipline as normaliseExpense: shape and range are settled
+     here; whether an id still points at something real is sanitise()'s job, once every
+     collection is clean. Each returns a fresh object or null.
+
+     Two rules that differ from expenses, both deliberate:
+       - Money is integer *paise* in a field named `paise`. A ledger compares numbers
+         rather than printing them — "is it settled?" is `outstanding === 0`, and
+         0.1 + 0.2 !== 0.3. The distinct field name makes a float impossible to assign
+         into by accident.
+       - An out-of-range timestamp is FLAGGED, never dropped. normaliseExpense returns
+         null past maxTs(), which on a phone whose clock reset after a battery pull
+         deletes a real ₹5,000 entry on next boot and tells nobody. That is precisely
+         the argument this feature exists to prevent. */
+
+  const ACC_KINDS  = ['cash', 'bank', 'wallet'];
+  // 'out' is money that left but is not category spending — cash lost, a transfer to an
+  // account you don't track. It stays deliberately unglamorous, but without it people
+  // push these through the balance correction instead, which is the one thing that
+  // must not become a dumping ground.
+  const MOVE_KINDS = ['in', 'out', 'xfer', 'adjust'];
+  const LED_DIRS   = ['out', 'in'];                                            // out = I gave them
+  const LED_KINDS  = ['unclear', 'loan', 'gift', 'fund', 'repay', 'vyavhar'];
+  const METHODS    = ['upi', 'cash', 'bank', 'none'];
+  const MAX_PAISE  = MAX_AMOUNT * 100;              // same ₹100 crore ceiling as an expense
+
+  const refId = v => (v != null && ID_OK.test(String(v))) ? String(v) : null;
+
+  /** Integer paise, or null if it could never be money. */
+  function toPaise(v) {
+    const n = Number(v);
+    if (!isFinite(n)) return null;
+    const p = Math.round(n);
+    return Math.abs(p) > MAX_PAISE ? null : p;
+  }
+
+  /** A name headed for markup. Real names have no angle brackets. */
+  function cleanName(v, max) {
+    const s = clipText(v, max || 24);
+    return (!s || NAME_BAD.test(s)) ? '' : s;
+  }
+
+  /** Keep the stamp, flag the implausible. Never discard. */
+  function normTs(v, fallback) {
+    const ts = Number(v);
+    if (!isFinite(ts) || isNaN(new Date(ts).getTime())) return { ts: fallback, suspect: false };
+    return { ts: ts, suspect: ts < MIN_TS || ts > maxTs() };
+  }
+
+  function normaliseAccount(a) {
+    if (!a || typeof a !== 'object') return null;
+    const name = cleanName(a.name, 24);
+    if (!name) return null;
+    const anchorPaise = toPaise(a.anchorPaise);       // may be 0, may be negative
+    if (anchorPaise === null) return null;
+    const t = normTs(a.anchorTs, Date.now());
+    return {
+      id: refId(a.id) || nid(),
+      name: name,
+      kind: ACC_KINDS.indexOf(a.kind) >= 0 ? a.kind : 'cash',
+      anchorPaise: anchorPaise,
+      anchorTs: t.ts,
+      tsSuspect: !!t.suspect,
+      archived: !!a.archived,
+      ts: Number(a.ts) || t.ts,
+    };
+  }
+
+  function normaliseMove(m) {
+    if (!m || typeof m !== 'object') return null;
+    const kind = MOVE_KINDS.indexOf(m.kind) >= 0 ? m.kind : null;
+    if (!kind) return null;
+    const paise = toPaise(m.paise);
+    if (paise === null) return null;
+    if (kind === 'adjust' ? paise === 0 : paise <= 0) return null;   // adjust is signed
+    const acc = refId(m.acc);
+    if (!acc) return null;
+    const toAcc = refId(m.toAcc);
+    if (kind === 'xfer' && (!toAcc || toAcc === acc)) return null;   // money must actually move
+    const t = normTs(m.ts, Date.now());
+    return {
+      id: refId(m.id) || nid(),
+      kind: kind, paise: paise, acc: acc,
+      toAcc: kind === 'xfer' ? toAcc : null,
+      note: clipText(m.note, 60),
+      ts: t.ts,
+      enteredTs: Number(m.enteredTs) || t.ts,
+      tsSuspect: !!t.suspect,
+    };
+  }
+
+  function normalisePerson(p) {
+    if (!p || typeof p !== 'object') return null;
+    const name = cleanName(p.name, 24);
+    if (!name) return null;
+    return {
+      id: refId(p.id) || nid(),
+      name: name,
+      archived: !!p.archived,
+      ts: Number(p.ts) || Date.now(),
+    };
+  }
+
+  function normaliseLedger(l) {
+    if (!l || typeof l !== 'object') return null;
+    const dir = LED_DIRS.indexOf(l.dir) >= 0 ? l.dir : null;
+    if (!dir) return null;
+    const paise = toPaise(l.paise);
+    if (paise === null || paise <= 0) return null;   // direction lives in `dir`, never in a sign
+    const person = refId(l.person);
+    if (!person) return null;
+    const t = normTs(l.ts, Date.now());
+    const settles = Array.isArray(l.settles) ? l.settles.map(s => {
+      const sid = refId(s && s.id), sp = toPaise(s && s.paise);
+      return (sid && sp !== null && sp > 0) ? { id: sid, paise: sp } : null;
+    }).filter(Boolean) : [];
+    return {
+      id: refId(l.id) || nid(),
+      dir: dir, person: person, paise: paise,
+      kind: LED_KINDS.indexOf(l.kind) >= 0 ? l.kind : 'unclear',
+      note: clipText(l.note, 60),
+      method: METHODS.indexOf(l.method) >= 0 ? l.method : 'none',
+      ref: clipText(l.ref, 24),
+      acc: refId(l.acc),
+      ts: t.ts,
+      enteredTs: Number(l.enteredTs) || t.ts,
+      tsSuspect: !!t.suspect,
+      settles: settles,
+      voided: !!l.voided,
     };
   }
 
@@ -104,6 +277,16 @@
     n = safeNum(n);
     const v = Math.abs(n) < 0.005 ? 0 : n;
     return '<span class="cur">₹</span>' + (dec ? nfDec : nfInt).format(dec ? v : Math.round(v));
+  }
+  /**
+   * Balances, unlike expenses, can be negative — and money() would render that as
+   * "₹-340", with the sign stranded on the wrong side of the symbol. Takes paise,
+   * because everything it is ever asked to print is paise.
+   */
+  function moneyP(p, dec) { return money(safeNum(p) / 100, dec); }
+  function moneySignedP(p, dec) {
+    p = safeNum(p);
+    return (p < 0 ? '−' : '') + money(Math.abs(p) / 100, dec);
   }
   /**
    * Short form for tight spaces. Deliberately NOT "₹61k" — nobody writing hisaab in
@@ -165,6 +348,13 @@
     seeded: false, sample: false, dismissed: false,
     notRecurring: [],          // guesses the user has told us were wrong
     lastBackup: 0, nudgeUntil: 0,
+    // ---- accounts & family ledger. Flat, because load() merges with a *shallow*
+    // Object.assign — a nested default comes back undefined from an older backup.
+    accounts: [],              // where money sits: cash, bank, wallet
+    moves: [],                 // money in, moved between own accounts, or corrected
+    people: [],                // family members money passes to and from
+    ledger: [],                // what passed between us and one of them
+    lastAcc: '',               // account preselected in the keypad, so the fast path stays fast
   });
   let DB = defaults();
 
@@ -200,32 +390,110 @@
    * Whatever was on disk, make it something the rest of the app can trust.
    * Returns true if anything had to be repaired.
    */
+  /**
+   * Map a stored list through its gate. Unlike expenses, a duplicate id here is
+   * DROPPED and reported, never renamed — these ids are pointed at by other records,
+   * and quietly reissuing one orphans every pointer with no error anywhere.
+   */
+  function cleanList(list, gate) {
+    if (!Array.isArray(list)) return [];
+    const out = [], seen = new Set();
+    let lost = 0;
+    list.forEach(x => {
+      const c = gate(x);
+      if (!c || seen.has(c.id)) { lost++; return; }
+      seen.add(c.id);
+      out.push(c);
+    });
+    if (lost) storageIssue = storageIssue || 'recovered';
+    return out;
+  }
+
+  /**
+   * Clearing expenses has to clear the ledger with them. An account's balance is an
+   * anchor plus everything dated after it — leave the accounts behind and their anchors
+   * now sit against data that no longer exists, or (after "load sample") against 105 days
+   * of fiction. Either way the first number the user sees is a confident lie.
+   */
+  function wipeLedger() {
+    DB.accounts = []; DB.moves = []; DB.people = []; DB.ledger = []; DB.lastAcc = '';
+  }
+
+  function stateSnapshot() {
+    return JSON.stringify([DB.expenses, DB.budget, DB.theme, DB.size, DB.notRecurring,
+                           DB.accounts, DB.moves, DB.people, DB.ledger, DB.lastAcc]);
+  }
+
   function sanitise() {
-    const snapshot = JSON.stringify([DB.expenses, DB.budget, DB.theme, DB.size, DB.notRecurring]);
+    const snapshot = stateSnapshot();
+
+    // Accounts and people first: expenses, moves and ledger entries all point at them,
+    // so their ids have to be settled before anything can be checked against them.
+    DB.accounts = cleanList(DB.accounts, normaliseAccount);
+    DB.people   = cleanList(DB.people,   normalisePerson);
+    const accIds = new Set(DB.accounts.map(a => a.id));
+    const perIds = new Set(DB.people.map(p => p.id));
+
     if (!Array.isArray(DB.expenses)) DB.expenses = [];
     const before = DB.expenses.length;
     DB.expenses = DB.expenses.map(normaliseExpense).filter(Boolean);
     // ids must be unique — a duplicate would make edit and delete hit the wrong row
     const seen = new Set();
     DB.expenses.forEach(e => { if (seen.has(e.id)) e.id = uid(); seen.add(e.id); });
+    // an account that no longer exists is not an account
+    DB.expenses.forEach(e => { if (e.acc && !accIds.has(e.acc)) e.acc = null; });
     if (DB.expenses.length !== before) storageIssue = storageIssue || 'recovered';
+
+    // A move whose account vanished has nothing to move; a ledger entry whose person
+    // vanished has nobody to be about. Both are dropped. A ledger entry whose *account*
+    // vanished is still a real thing that happened — it just stops touching a balance.
+    DB.moves = cleanList(DB.moves, normaliseMove)
+      .filter(m => accIds.has(m.acc) && (m.kind !== 'xfer' || accIds.has(m.toAcc)));
+    DB.ledger = cleanList(DB.ledger, normaliseLedger).filter(l => perIds.has(l.person));
+    DB.ledger.forEach(l => { if (l.acc && !accIds.has(l.acc)) l.acc = null; });
+
+    // Settlements may only point at a real entry, owed the other way, with the same
+    // person — and may never add up to more than the debt they claim to discharge.
+    const byId = new Map(DB.ledger.map(l => [l.id, l]));
+    DB.ledger.forEach(l => {
+      if (!l.settles.length) return;
+      let room = new Map();
+      l.settles = l.settles.filter(s => {
+        const t = byId.get(s.id);
+        if (!t || t.id === l.id || t.person !== l.person || t.dir === l.dir) return false;
+        const used = room.has(t.id) ? room.get(t.id) : 0;
+        if (used + s.paise > t.paise) return false;
+        room.set(t.id, used + s.paise);
+        return true;
+      });
+    });
+
+    if (DB.lastAcc && !accIds.has(DB.lastAcc)) DB.lastAcc = '';
 
     if (!Array.isArray(DB.notRecurring)) DB.notRecurring = [];
     DB.budget = isFinite(Number(DB.budget)) && Number(DB.budget) > 0 ? Math.round(Number(DB.budget)) : 0;
     if (['auto','light','dark'].indexOf(DB.theme) < 0) DB.theme = 'auto';
     if (['md','lg','xl'].indexOf(DB.size) < 0) DB.size = 'md';
 
-    return JSON.stringify([DB.expenses, DB.budget, DB.theme, DB.size, DB.notRecurring]) !== snapshot;
+    return stateSnapshot() !== snapshot;
   }
   let rev = 0;                       // bumped on every write; invalidates derived values
+  /**
+   * Returns whether the write actually reached disk. A lost expense costs one
+   * forgotten chai; a lost ledger entry is "I recorded that ₹5,000 came back"
+   * with no evidence on either side. Every accounts/ledger write path checks this
+   * and refuses to close its sheet on false.
+   */
   function save() {
     rev++;
-    if (memoryOnly) return;
+    if (memoryOnly) return false;
     try { localStorage.setItem(KEY, JSON.stringify(DB)); }
     catch (e) {
       memoryOnly = true;
       storageIssue = (e && (e.name === 'QuotaExceededError' || e.code === 22)) ? 'full' : 'blocked';
+      return false;
     }
+    return true;
   }
 
   /**
@@ -1353,6 +1621,8 @@
         ${heroCard()}
         ${monthCard()}
       </div>
+      ${accountsSection()}
+      ${familySection()}
       ${upcomingSection()}
       ${whereSection(S.period)}
       ${biggestSection()}
@@ -1500,6 +1770,21 @@
       </div>
 
       <section class="sec rise">
+        <div class="sec__head"><div><h2 class="sec__title">Your money</h2>
+          <div class="sec__sub">Where it sits, and what has passed between you and the family.</div></div></div>
+        <div class="list">
+          <button class="li li--btn" data-nav="accounts">${icon('i-wallet')}
+            <span class="li__b"><span class="li__t">Accounts</span>
+              <span class="li__s">${hasAccounts() ? `${liveAccounts().length} ${liveAccounts().length===1?'account':'accounts'} · ${esc(moneyP(totalOnHand()))}` : 'Not set up yet'}</span></span>
+            ${icon('i-chev-right')}</button>
+          <button class="li li--btn" data-nav="family">${icon('i-people')}
+            <span class="li__b"><span class="li__t">Family</span>
+              <span class="li__s">${DB.people.length ? `${DB.people.length} ${DB.people.length===1?'person':'people'}` : 'Nobody added yet'}</span></span>
+            ${icon('i-chev-right')}</button>
+        </div>
+      </section>
+
+      <section class="sec rise">
         <div class="sec__head"><h2 class="sec__title">Appearance</h2></div>
         <div class="list">
           <div class="li">
@@ -1555,6 +1840,211 @@
       <span class="empty__t">${esc(t)}</span><span class="empty__s">${esc(s)}</span></div>`;
   }
 
+  /* ===================== accounts & family ===================== */
+
+  const accById      = id => DB.accounts.filter(a => a.id === id)[0] || null;
+  const personById   = id => DB.people.filter(p => p.id === id)[0] || null;
+  const liveAccounts = () => DB.accounts.filter(a => !a.archived);
+  const hasAccounts  = () => liveAccounts().length > 0;
+
+  /* One object, so nobody can hand ledger.js half the picture and get a plausible
+     wrong answer. Memoised on rev like every other derived figure. */
+  const book = () => ({ accounts: DB.accounts, moves: DB.moves, ledger: DB.ledger,
+                        expenses: DB.expenses, people: DB.people });
+  const balanceOf   = id => cached('bal|' + id, () => Ledger.balance(id, book()));
+  const totalOnHand = () => cached('onhand', () => liveAccounts().reduce((s, a) => s + balanceOf(a.id), 0));
+
+  const ACC_IC    = { cash: 'i-wallet', bank: 'i-bank', wallet: 'i-wallet' };
+  const ACC_LABEL = { cash: 'Cash', bank: 'Bank', wallet: 'Wallet / UPI' };
+  const accIcon   = a => ACC_IC[a.kind] || 'i-wallet';
+
+  const KIND_LABEL = { unclear: 'not decided yet', loan: 'to come back', gift: 'a gift',
+                       fund: 'for something', repay: 'paid back', vyavhar: 'vyavhar' };
+
+  function agoText(ts) {
+    const d = Math.floor((Date.now() - Number(ts)) / 86400000);
+    if (d <= 0) return 'today';
+    if (d === 1) return 'yesterday';
+    if (d < 31) return d + ' days ago';
+    const m = Math.round(d / 30.4);
+    return m <= 1 ? 'about a month ago' : 'about ' + m + ' months ago';
+  }
+
+  /* Direction is said in words and with an arrow, never in colour alone: red/green is
+     the most common colour-blind failure, and this is the one figure in the app that
+     absolutely must not be misread. */
+  function netWords(f) {
+    if (f.net > 0) return 'owes you ' + moneyP(f.net);
+    if (f.net < 0) return 'you owe ' + moneyP(-f.net);
+    if (f.undecidedOut || f.undecidedIn) return 'nothing owed · something undecided';
+    return 'all settled';
+  }
+
+  function accountsSection() {
+    if (!hasAccounts()) return '';
+    const list = liveAccounts();
+    const stale = list.filter(a => Date.now() - a.anchorTs > 21 * 86400000);
+    return `
+      <section class="sec rise" style="animation-delay:.14s">
+        <div class="sec__head"><div><h2 class="sec__title">Right now you have</h2></div>
+          <button class="link" data-nav="accounts">Accounts ${icon('i-chev-right')}</button></div>
+        <div class="card" style="padding:16px 18px">
+          <div class="money" style="font-size:1.9rem;font-weight:700;letter-spacing:-.04em">${moneyHTML(totalOnHand() / 100)}</div>
+          <div class="stats" style="margin-top:14px">
+            ${list.slice(0, 4).map(a => htm`
+              <button class="stat" data-act="open-acc" data-id="${a.id}" style="text-align:left">
+                <b class="${balanceOf(a.id) < 0 ? 'is-neg' : ''}">${moneySignedP(balanceOf(a.id))}</b>
+                <span>${a.name}</span>
+              </button>`).join('')}
+          </div>
+          ${stale.length ? htm`<p class="cmp-note" style="margin:13px 2px 0">${stale[0].name} was last checked ${agoText(stale[0].anchorTs)}.</p>` : ''}
+        </div>
+      </section>`;
+  }
+
+  function familySection() {
+    const folks = Ledger.everyone(book());
+    if (!folks.length) return '';
+    const open = folks.filter(f => f.net !== 0 || f.undecidedOut || f.undecidedIn);
+    const show = (open.length ? open : folks).slice(0, 4);
+    return `
+      <section class="sec rise" style="animation-delay:.18s">
+        <div class="sec__head"><div><h2 class="sec__title">Family</h2></div>
+          <button class="link" data-nav="family">Open ${icon('i-chev-right')}</button></div>
+        <div class="list">
+          ${show.map(f => htm`
+            <button class="li li--btn" data-act="open-person" data-id="${f.person}">
+              <span class="li__b"><span class="li__t">${f.name}</span>
+                <span class="li__s">${trusted(f.net > 0 ? icon('i-up') : f.net < 0 ? icon('i-down') : '')}${netWords(f)}</span></span>
+              ${trusted(icon('i-chev-right'))}
+            </button>`).join('')}
+        </div>
+      </section>`;
+  }
+
+  function viewAccounts() {
+    const list = liveAccounts();
+    const parked = Ledger.parked(book());
+    const parkedP = parked.reduce((s, x) => s + x.paise, 0);
+
+    if (!list.length) {
+      return `
+        <div class="greet rise"><h1 class="greet__hi">Accounts</h1>
+          <div class="greet__date">Where your money sits</div></div>
+        <div class="card rise" style="margin-top:16px;padding:26px 20px">
+          <div class="empty" style="padding:0">
+            <span class="empty__ic">${icon('i-wallet')}</span>
+            <span class="empty__t">No accounts yet</span>
+            <span class="empty__s">Tell Hisaab what you have right now — cash in hand, money in the bank. Every expense you record after that comes out of it.</span>
+            <button class="btn btn--primary btn--lg" style="margin-top:20px;width:100%" data-act="add-acc">${icon('i-plus')}Add an account</button>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <div class="greet rise"><h1 class="greet__hi">Accounts</h1>
+        <div class="greet__date">${moneyP(totalOnHand())} across ${list.length} ${list.length === 1 ? 'place' : 'places'}</div></div>
+
+      <section class="sec rise" style="margin-top:16px">
+        <div class="list">
+          ${list.map(a => { const b = balanceOf(a.id); return htm`
+            <button class="li li--btn" data-act="open-acc" data-id="${a.id}">
+              ${trusted(icon(accIcon(a)))}
+              <span class="li__b"><span class="li__t">${a.name}</span>
+                <span class="li__s">${ACC_LABEL[a.kind] || 'Cash'} · checked ${agoText(a.anchorTs)}</span></span>
+              <span class="item__v ${b < 0 ? 'is-neg' : ''}">${moneySignedP(b)}</span>
+            </button>`; }).join('')}
+        </div>
+      </section>
+
+      <section class="sec rise">
+        <div class="list">
+          <button class="li li--btn" data-nav="family">
+            ${icon('i-people')}
+            <span class="li__b"><span class="li__t">${parkedP ? 'Out with people' : 'Family'}</span>
+              <span class="li__s">${parkedP
+                ? `${parked.length} still open · oldest ${esc(agoText(parked[0].ts))}`
+                : 'What has passed between you and them'}</span></span>
+            ${parkedP ? `<span class="item__v">${moneyP(parkedP)}</span>` : icon('i-chev-right')}
+          </button>
+        </div>
+      </section>
+
+      <section class="sec rise">
+        <span class="lbl">Record</span>
+        <div class="list">
+          <button class="li li--btn" data-act="money-in">${icon('i-down')}
+            <span class="li__b"><span class="li__t">Money came in</span>
+              <span class="li__s">Salary, a refund, money received</span></span></button>
+          <button class="li li--btn" data-act="money-move">${icon('i-swap')}
+            <span class="li__b"><span class="li__t">Move between accounts</span>
+              <span class="li__s">Withdrew cash, deposited to the bank — not spending</span></span></button>
+          <button class="li li--btn" data-act="add-acc">${icon('i-plus')}
+            <span class="li__b"><span class="li__t">Add an account</span></span></button>
+        </div>
+      </section>
+      <p class="foot">Balances stay on this device, like everything else.</p>`;
+  }
+
+  function viewFamily() {
+    const folks = Ledger.everyone(book());
+    const parked = Ledger.parked(book());
+
+    if (!DB.people.length) {
+      return `
+        <div class="greet rise"><h1 class="greet__hi">Family</h1>
+          <div class="greet__date">Who gave what to whom</div></div>
+        <div class="card rise" style="margin-top:16px;padding:26px 20px">
+          <div class="empty" style="padding:0">
+            <span class="empty__ic">${icon('i-people')}</span>
+            <span class="empty__t">Nobody added yet</span>
+            <span class="empty__s">Add the people money actually passes between — a sister, a brother, your parents. Then record what went which way, and what came back.</span>
+            <button class="btn btn--primary btn--lg" style="margin-top:20px;width:100%" data-act="add-person">${icon('i-plus')}Add someone</button>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <div class="greet rise"><h1 class="greet__hi">Family</h1>
+        <div class="greet__date">Only you can see this. Nothing is shared.</div></div>
+
+      <section class="sec rise" style="margin-top:16px">
+        <div class="list">
+          ${folks.map(f => htm`
+            <button class="li li--btn" data-act="open-person" data-id="${f.person}">
+              <span class="li__b"><span class="li__t">${f.name}</span>
+                <span class="li__s">${trusted(f.net > 0 ? icon('i-up') : f.net < 0 ? icon('i-down') : '')}${netWords(f)}${f.undecidedOut || f.undecidedIn ? ' · ' + moneyP(f.undecidedOut + f.undecidedIn) + ' undecided' : ''}</span></span>
+              ${trusted(icon('i-chev-right'))}
+            </button>`).join('')}
+        </div>
+      </section>
+
+      ${parked.length ? `<section class="sec rise">
+        <span class="lbl">Still out there</span>
+        <div class="list">
+          ${parked.map(p => htm`
+            <button class="li li--btn" data-act="open-person" data-id="${p.person}">
+              <span class="li__b"><span class="li__t">${p.name}</span>
+                <span class="li__s">since ${fullDate(new Date(p.ts))}${p.note ? ' · ' + p.note : ''}</span></span>
+              <span class="item__v">${moneyP(p.paise)}</span>
+            </button>`).join('')}
+        </div>
+        <p class="cmp-note" style="margin:10px 2px 0">Oldest first. This is your money sitting with someone else.</p>
+      </section>` : ''}
+
+      <section class="sec rise">
+        <div class="list">
+          <button class="li li--btn" data-act="add-person">${icon('i-plus')}
+            <span class="li__b"><span class="li__t">Add someone</span></span></button>
+          <button class="li li--btn" data-nav="accounts">${icon('i-wallet')}
+            <span class="li__b"><span class="li__t">Accounts</span>
+              <span class="li__s">${hasAccounts() ? esc(moneyP(totalOnHand())) + ' on hand' : 'Not set up yet'}</span></span>
+            ${icon('i-chev-right')}</button>
+        </div>
+      </section>
+      <p class="foot">Hisaab remembers what you recorded. It can't prove anything —<br>it's a notebook, not a bank.</p>`;
+  }
+
   /* ===================== render ===================== */
   const viewEl = $('#view'), topRight = $('#topbarRight');
 
@@ -1590,7 +2080,7 @@
     computeDark();
     const y = keepScroll ? window.scrollY : null;
     const refocus = focusKey(document.activeElement);
-    const map = { home: viewHome, insights: viewInsights, history: viewHistory, settings: viewSettings };
+    const map = { home: viewHome, insights: viewInsights, history: viewHistory, settings: viewSettings, accounts: viewAccounts, family: viewFamily };
     viewEl.innerHTML = (map[S.view] || viewHome)();
     if (refocus) {
       const again = viewEl.querySelector(refocus);
@@ -1605,7 +2095,7 @@
     $$('.tab').forEach(b => {
       if (b.dataset.nav === S.view) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
     });
-    announce({ home:'Home', insights:'Insights', history:'History', settings:'Settings' }[S.view] || '');
+    announce({ home:'Home', insights:'Insights', history:'History', settings:'Settings', accounts:'Accounts', family:'Family' }[S.view] || '');
 
     enhance();
     if (y != null) window.scrollTo(0, y);
@@ -1800,9 +2290,12 @@
   function openAdd(existing, prefill) {
     S.editing = existing || null;
     const d = existing
-      ? { amount: String(existing.amount), catId: existing.catId, note: existing.note || '', date: dayKey(existing.ts), ts: existing.ts }
+      ? { amount: String(existing.amount), catId: existing.catId, note: existing.note || '', date: dayKey(existing.ts), ts: existing.ts, acc: existing.acc || null }
       : { amount: prefill ? String(prefill.amount) : '', catId: prefill ? prefill.catId : null,
-          note: prefill ? (prefill.note || '') : '', date: dayKey(new Date()), ts: null };
+          note: prefill ? (prefill.note || '') : '', date: dayKey(new Date()), ts: null,
+          // Most people spend from the same place most of the time, so the last one used
+          // is already selected and the fast path stays amount → category → Save.
+          acc: (DB.lastAcc && accById(DB.lastAcc) && !accById(DB.lastAcc).archived) ? DB.lastAcc : null };
     S.draft = d;
     const picks = existing ? [] : quickPicks();
 
@@ -1813,6 +2306,13 @@
       </div>
       <div class="sheet__body">
         <div class="amt is-zero" id="amtDisp" role="status" aria-live="polite" aria-atomic="true" aria-label="Amount entered"><span class="cur">₹</span><span id="amtVal">0</span><span class="amt__caret"></span></div>
+
+        ${hasAccounts() ? `<span class="lbl" style="margin-top:10px">Paid from</span>
+        <div class="chips" role="group" aria-label="Paid from">
+          ${liveAccounts().map(a => `<button type="button" class="chip" data-act="pick-eacc" data-v="${esc(a.id)}"
+            aria-pressed="${d.acc === a.id}">${icon(accIcon(a))}${esc(a.name)}</button>`).join('')}
+          <button type="button" class="chip" data-act="pick-eacc" data-v="" aria-pressed="${!d.acc}">Not sure</button>
+        </div>` : ''}
 
         ${picks.length ? `<div class="quick" id="quick">${picks.map((p,i) => {
           const c = catOf(p.catId);
@@ -1895,18 +2395,46 @@
     else if (isToday) ts = Date.now();
     else { const dt = new Date(parts[0], parts[1]-1, parts[2]); dt.setHours(12, 0, 0, 0); ts = dt.getTime(); }
 
-    if (S.editing) {
-      const e = DB.expenses.find(x => x.id === S.editing.id);
-      if (e) { e.amount = amount; e.catId = d.catId; e.note = note; e.ts = ts; }
-      S.newId = S.editing.id;
-      toast(`Updated <b>${money(amount)}</b> · ${catOf(d.catId).name}`);
-    } else {
-      const e = { id: uid(), amount, catId: d.catId, note, ts };
-      DB.expenses.push(e);
-      S.newId = e.id;
-      toast(`Added <b>${money(amount)}</b> · ${catOf(d.catId).name}`);
+    const idx  = S.editing ? DB.expenses.findIndex(x => x.id === S.editing.id) : -1;
+    const prev = idx >= 0 ? DB.expenses[idx] : null;
+    if (S.editing && !prev) {           // deleted in another tab while this sheet was open
+      closeSheet();
+      return toast('That expense is no longer there');
     }
-    save(); closeSheet(); render();
+
+    /* One gate, whatever door it came in by — including this one, which is the busiest
+       door in the app and used to be the one that skipped it. Building the record here
+       and pushing it raw meant the note never met clipText() and the id never met ID_OK. */
+    const clean = normaliseExpense({
+      id:     prev ? prev.id : uid(),
+      amount: amount,
+      catId:  d.catId,
+      note:   note,
+      ts:     ts,
+      acc:    d.acc !== undefined ? d.acc : (prev ? prev.acc : null),
+    });
+    if (!clean) {
+      if (btn) btn.disabled = false;
+      return toast('That does not look like a valid expense');
+    }
+
+    if (prev) DB.expenses[idx] = clean; else DB.expenses.push(clean);
+    S.newId = clean.id;
+    const wasLast = DB.lastAcc;
+    if (clean.acc) DB.lastAcc = clean.acc;      // so the next expense is pre-picked
+
+    if (!save()) {
+      DB.lastAcc = wasLast;
+      // The write never landed. Put it back — a lost expense must not look like a saved one.
+      if (prev) DB.expenses[idx] = prev; else DB.expenses.pop();
+      S.newId = null;
+      if (btn) btn.disabled = false;
+      return toast(storageIssue === 'full'
+        ? 'Storage is full — nothing was saved'
+        : 'Could not save — storage is blocked on this device');
+    }
+    toast(`${prev ? 'Updated' : 'Added'} <b>${money(clean.amount)}</b> · ${catOf(clean.catId).name}`);
+    closeSheet(); render();
   }
 
   /* ---------- expense detail ---------- */
@@ -2094,6 +2622,252 @@
     `);
   }
 
+  /* ---------- accounts & family sheets ----------
+     Amounts here use a plain decimal field rather than the keypad. The keypad is tuned
+     for the one thing it does forty times a week; these sheets are opened occasionally
+     and need a second number and a name beside it. */
+
+  const amountField = (id, label, val) => `
+    <span class="lbl">${esc(label)}</span>
+    <label class="budgetinput"><span>₹</span><input id="${id}" type="text" inputmode="decimal"
+      autocomplete="off" placeholder="0" value="${esc(val == null ? '' : val)}" aria-label="${esc(label)}"></label>`;
+
+  /** Rupees typed by a human → integer paise, or null if it isn't money. */
+  function readPaise(id, allowZero) {
+    const el = $('#' + id);
+    if (!el) return null;
+    const n = Number(String(el.value).replace(/[,\s₹]/g, ''));
+    if (!isFinite(n) || (!allowZero && n <= 0) || Math.abs(n) > MAX_AMOUNT) return null;
+    return Math.round(n * 100);
+  }
+  const readText = (id, max) => clipText(($('#' + id) && $('#' + id).value) || '', max || 60);
+
+  function accChips(act, selId, noneLabel) {
+    return `<div class="chips" role="group" aria-label="Account">
+      ${liveAccounts().map(a => `<button type="button" class="chip" data-act="${act}" data-v="${esc(a.id)}"
+        aria-pressed="${a.id === selId}">${icon(accIcon(a))}${esc(a.name)}</button>`).join('')}
+      ${noneLabel ? `<button type="button" class="chip" data-act="${act}" data-v=""
+        aria-pressed="${!selId}">${esc(noneLabel)}</button>` : ''}
+    </div>`;
+  }
+
+  function openAccountSheet() {
+    S.pick = { kind: 'cash' };
+    openSheet('acc', `
+      <div class="sheet__head"><h2 class="sheet__title">Add an account</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <span class="lbl">What is it</span>
+        <div class="chips" role="group" aria-label="Kind of account">
+          ${ACC_KINDS.map(k => `<button type="button" class="chip" data-act="pick-kind" data-v="${k}"
+            aria-pressed="${k === 'cash'}">${icon(ACC_IC[k])}${esc(ACC_LABEL[k])}</button>`).join('')}
+        </div>
+        <span class="lbl">Name it</span>
+        <div class="metarow"><input class="noteinput" id="accName" type="text" maxlength="24"
+          placeholder="Cash in hand, HDFC, PhonePe" autocomplete="off" aria-label="Account name"></div>
+        ${amountField('accAmt', 'How much is in it right now')}
+        <p class="cmp-note" style="margin:10px 2px 20px">This is your starting point, as of now. Everything you record from here on moves it — what you spent before today stays where it is.</p>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-acc">${icon('i-check')}Add account</button>
+      </div>`);
+  }
+
+  function openAccount(id) {
+    const a = accById(id); if (!a) return;
+    const b = balanceOf(id);
+    const hist = Ledger.accountHistory(id, book()).slice(0, 30);
+    const unex = DB.moves.filter(m => m.kind === 'adjust' && m.acc === id);
+    const unexP = unex.reduce((s, m) => s + m.paise, 0);
+
+    openSheet('accdet', `
+      <div class="sheet__head"><h2 class="sheet__title">${esc(a.name)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <div class="detail" style="padding-bottom:6px">
+          <span class="cat-ic cat-ic--lg" style="${cvars('bills')}">${icon(accIcon(a))}</span>
+          <div class="detail__v money ${b < 0 ? 'is-neg' : ''}">${moneySignedP(b)}</div>
+          <div class="detail__t">${esc(ACC_LABEL[a.kind] || 'Cash')}</div>
+          <div class="detail__s">You last checked this ${esc(agoText(a.anchorTs))}</div>
+        </div>
+        ${b < 0 ? `<p class="cmp-note" style="margin:2px 2px 0;text-align:center">This is below zero, so something is missing — either money came in that isn't recorded, or the starting figure was off.</p>` : ''}
+        <button class="btn btn--primary btn--block btn--lg" style="margin-top:16px" data-act="reconcile" data-id="${esc(a.id)}">
+          ${icon('i-check')}Check the balance
+        </button>
+        ${unex.length ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">Unexplained so far: ${esc(moneySignedP(unexP))} across ${unex.length} ${unex.length === 1 ? 'check' : 'checks'}.</p>` : ''}
+
+        <span class="lbl">Since you last checked</span>
+        ${hist.length ? `<div class="list">${hist.map(h => `
+          <div class="li">
+            <span class="li__b"><span class="li__t">${esc(h.note || histLabel(h))}</span>
+              <span class="li__s">${esc(fullDate(new Date(h.ts)))} · ${esc(histLabel(h))}</span></span>
+            <span class="item__v ${h.paise < 0 ? '' : 'is-pos'}">${esc((h.paise > 0 ? '+' : '') + moneySignedP(h.paise))}</span>
+          </div>`).join('')}</div>`
+        : `<p class="cmp-note" style="margin:0 2px">Nothing has moved since then.</p>`}
+
+        <span class="lbl">This account</span>
+        <div class="list">
+          <button class="li li--btn" data-act="money-in" data-id="${esc(a.id)}">${icon('i-down')}
+            <span class="li__b"><span class="li__t">Money came in</span></span></button>
+          <button class="li li--btn" data-act="money-out" data-id="${esc(a.id)}">${icon('i-up')}
+            <span class="li__b"><span class="li__t">Money left, but wasn't spending</span>
+              <span class="li__s">Cash lost, sent somewhere Hisaab doesn't track</span></span></button>
+          <button class="li li--btn li--danger" data-act="archive-acc" data-id="${esc(a.id)}">${icon('i-trash')}
+            <span class="li__b"><span class="li__t">Put this account away</span>
+              <span class="li__s">It stops appearing, and nothing you recorded is lost</span></span></button>
+        </div>
+        <div style="height:20px"></div>
+      </div>`);
+  }
+
+  function histLabel(h) {
+    if (h.type === 'expense') return catOf(h.kind).name;
+    if (h.type === 'ledger') return KIND_LABEL[h.kind] || 'family';
+    return ({ in: 'money in', out: 'money out', 'xfer-in': 'moved in', 'xfer-out': 'moved out',
+              adjust: 'unaccounted for' })[h.kind] || 'moved';
+  }
+
+  /**
+   * Checking a balance is framed as verification, not adjustment — "that's right" rather
+   * than "fix it". When the figure disagrees, the gap is written down as its own visible
+   * row instead of being quietly absorbed, because a correction that leaves no trace is
+   * how a ledger stops being worth trusting.
+   */
+  function openReconcile(id) {
+    const a = accById(id); if (!a) return;
+    const expected = balanceOf(id);
+    S.pick = { acc: id, expected: expected };
+    openSheet('recon', `
+      <div class="sheet__head"><h2 class="sheet__title">Check ${esc(a.name)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <p class="cmp-note" style="margin:4px 2px 0">Count what is actually there and type it in. Hisaab currently thinks there is <b>${esc(moneySignedP(expected))}</b>.</p>
+        ${amountField('reconAmt', 'How much is actually there', (expected / 100).toFixed(2).replace(/\.00$/, ''))}
+        <p class="cmp-note" id="reconDiff" style="margin:10px 2px 20px"></p>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-recon">${icon('i-check')}That's right</button>
+      </div>`, () => {
+        const el = $('#reconAmt'), out = $('#reconDiff');
+        const paint = () => {
+          const p = readPaise('reconAmt', true);
+          if (p == null) { out.textContent = ''; return; }
+          const d = p - expected;
+          out.innerHTML = d === 0
+            ? 'That matches exactly. Good — the shorter the gap between checks, the less can drift.'
+            : `That is <b>${esc(moneySignedP(Math.abs(d)))} ${d < 0 ? 'less' : 'more'}</b> than Hisaab expected. The difference gets written down so you can see it later.`;
+        };
+        if (el) { el.addEventListener('input', paint); paint(); }
+      });
+  }
+
+  function openMoney(kind, accId) {
+    const list = liveAccounts();
+    if (!list.length) return toast('Add an account first');
+    S.pick = { acc: accId || DB.lastAcc || list[0].id, to: null, kind: kind };
+    const title = kind === 'in' ? 'Money came in' : kind === 'out' ? 'Money left' : 'Move between accounts';
+    openSheet('money', `
+      <div class="sheet__head"><h2 class="sheet__title">${esc(title)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        ${amountField('mAmt', 'How much')}
+        <span class="lbl">${kind === 'xfer' ? 'Out of' : 'Which account'}</span>
+        ${accChips('pick-acc', S.pick.acc, null)}
+        ${kind === 'xfer' ? `<span class="lbl">Into</span>${accChips('pick-to', null, null)}` : ''}
+        <span class="lbl">What was it</span>
+        <div class="metarow"><input class="noteinput" id="mNote" type="text" maxlength="60"
+          placeholder="${kind === 'in' ? 'Salary, refund, sold something' : kind === 'xfer' ? 'Withdrew from ATM' : 'Lost, sent elsewhere'}"
+          autocomplete="off" aria-label="What it was"></div>
+        ${kind === 'xfer' ? `<p class="cmp-note" style="margin:12px 2px 20px">Moving your own money between your own accounts isn't spending, so this will never show up in your categories.</p>` : '<div style="height:16px"></div>'}
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-money">${icon('i-check')}Save</button>
+      </div>`);
+  }
+
+  function openPersonSheet() {
+    openSheet('person-new', `
+      <div class="sheet__head"><h2 class="sheet__title">Add someone</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <span class="lbl">Their name</span>
+        <div class="metarow"><input class="noteinput" id="pName" type="text" maxlength="24"
+          placeholder="Priya, Bhai, Ma" autocomplete="off" aria-label="Their name"></div>
+        <p class="cmp-note" style="margin:12px 2px 20px">Just a name, so you can keep the hisaab straight. Nothing is sent to them, and nothing leaves this phone.</p>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-person">${icon('i-check')}Add</button>
+      </div>`);
+  }
+
+  function openPerson(id) {
+    const p = personById(id); if (!p) return;
+    const st = Ledger.withPerson(id, book());
+    const su = Ledger.settleUp(id, book());
+    const rows = DB.ledger.filter(l => l.person === id && !l.voided)
+      .sort((a, b) => b.ts - a.ts).slice(0, 40);
+
+    openSheet('person', `
+      <div class="sheet__head"><h2 class="sheet__title">${esc(p.name)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <div class="detail" style="padding-bottom:6px">
+          <span class="cat-ic cat-ic--lg" style="${cvars('gift')}">${icon('i-people')}</span>
+          <div class="detail__v money">${esc(moneyP(Math.abs(st.net)))}</div>
+          <div class="detail__t">${st.net > 0 ? esc(p.name) + ' owes you' : st.net < 0 ? 'You owe ' + esc(p.name) : 'Nothing owed either way'}</div>
+          ${(st.undecidedOut || st.undecidedIn) ? `<div class="detail__s">and ${esc(moneyP(st.undecidedOut + st.undecidedIn))} not decided yet</div>` : ''}
+        </div>
+
+        ${(su.theyOwe && su.youOwe) ? `<p class="cmp-note" style="margin:10px 2px 0;text-align:center">
+          ${esc(p.name)} owes ${esc(moneyP(su.theyOwe))}, you owe ${esc(moneyP(su.youOwe))}. ${esc(moneyP(su.cancels))} cancels.
+          ${su.payment > 0 ? esc(p.name) + ' pays you ' + esc(moneyP(su.payment)) : su.payment < 0 ? 'You pay ' + esc(moneyP(-su.payment)) : 'Nothing left between you'}.</p>` : ''}
+
+        <div class="detail__acts" style="margin-top:18px">
+          <button class="btn btn--block" data-act="lend" data-id="${esc(id)}" data-v="out">${icon('i-up')}I gave</button>
+          <button class="btn btn--block" data-act="lend" data-id="${esc(id)}" data-v="in">${icon('i-down')}I got</button>
+        </div>
+
+        <span class="lbl">Everything between you</span>
+        ${rows.length ? `<div class="list">${rows.map(l => `
+          <div class="li">
+            <span class="li__b"><span class="li__t">${esc(l.note || (l.dir === 'out' ? 'You gave' : 'You got'))}</span>
+              <span class="li__s">${esc(fullDate(new Date(l.ts)))} · ${esc(KIND_LABEL[l.kind] || '')}${l.ref ? ' · ' + esc(l.ref) : ''}${l.tsSuspect ? ' · date looks wrong' : ''}</span></span>
+            <span class="item__v">${esc((l.dir === 'out' ? '−' : '+') + moneyP(l.paise))}</span>
+          </div>`).join('')}</div>`
+        : `<p class="cmp-note" style="margin:0 2px">Nothing recorded yet.</p>`}
+        <div style="height:20px"></div>
+      </div>`);
+  }
+
+  function openLend(personId, dir) {
+    const p = personById(personId); if (!p) return;
+    S.pick = { person: personId, dir: dir, lkind: 'unclear', acc: DB.lastAcc || null };
+    const kinds = dir === 'out'
+      ? [['unclear', 'Not decided'], ['loan', 'To come back'], ['gift', 'A gift'], ['fund', 'For something'], ['repay', 'Paying them back'], ['vyavhar', 'Vyavhar']]
+      : [['unclear', 'Not decided'], ['loan', 'To go back'], ['gift', 'A gift'], ['repay', 'Paid me back'], ['vyavhar', 'Vyavhar']];
+
+    openSheet('lend', `
+      <div class="sheet__head"><h2 class="sheet__title">${dir === 'out' ? 'You gave ' : 'You got from '}${esc(p.name)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        ${amountField('lAmt', 'How much')}
+        <span class="lbl">What was it for</span>
+        <div class="metarow"><input class="noteinput" id="lNote" type="text" maxlength="60"
+          placeholder="Fees, the electrician, no reason" autocomplete="off" aria-label="What it was for"></div>
+        <span class="lbl">Is it coming back?</span>
+        <div class="chips" role="group" aria-label="Kind">
+          ${kinds.map(([k, l]) => `<button type="button" class="chip" data-act="pick-lkind" data-v="${k}"
+            aria-pressed="${k === 'unclear'}">${esc(l)}</button>`).join('')}
+        </div>
+        <p class="cmp-note" style="margin:8px 2px 0">You don't have to decide now — "Not decided" is a real answer, and it stays out of who-owes-what until you say otherwise.</p>
+        ${liveAccounts().length ? `<span class="lbl">${dir === 'out' ? 'Out of' : 'Into'}</span>${accChips('pick-acc', S.pick.acc, "Didn't touch an account")}` : ''}
+        <div style="height:18px"></div>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-lend">${icon('i-check')}Save</button>
+      </div>`);
+  }
+
   /* ===================== toast ===================== */
   const toastEl = $('#toast'); let toastT;
   function toast(html, action) {
@@ -2159,16 +2933,29 @@
       try { data = JSON.parse(reader.result); }
       catch (e) { return toast("That doesn't look like a Hisaab backup"); }
 
-      const raw = Array.isArray(data) ? data : (data && data.expenses);
-      if (!Array.isArray(raw)) return toast("That doesn't look like a Hisaab backup");
+      const isBare = Array.isArray(data);
+      const raw = isBare ? data : (data && Array.isArray(data.expenses) ? data.expenses : null);
+      // A v2 backup may legitimately carry a ledger and no expenses at all.
+      const hasLedger = !isBare && data && (Array.isArray(data.ledger) || Array.isArray(data.accounts));
+      if (!Array.isArray(raw) && !hasLedger) return toast("That doesn't look like a Hisaab backup");
 
-      if (raw.length > MAX_IMPORT_ROWS) {
+      const rows = raw || [];
+      if (rows.length > MAX_IMPORT_ROWS) {
         return toast(`That backup has more than ${nfInt.format(MAX_IMPORT_ROWS)} rows`);
       }
-      const clean = raw.map(normaliseExpense).filter(Boolean);
+      const clean = rows.map(normaliseExpense).filter(Boolean);
 
-      if (!clean.length) return toast('No usable expenses in that file');
-      const skipped = raw.length - clean.length;
+      /* v1 backups wrote only budget + expenses, so restoring one silently dropped every
+         preference. Repeating that now would drop the whole ledger — the one thing here
+         nobody can reconstruct from memory. Read it all back, through the same gates. */
+      const thru = (l, gate) => Array.isArray(l) ? l.map(gate).filter(Boolean).slice(0, MAX_IMPORT_ROWS) : [];
+      const inAcc = thru(data && data.accounts, normaliseAccount);
+      const inPpl = thru(data && data.people,   normalisePerson);
+      const inMov = thru(data && data.moves,    normaliseMove);
+      const inLed = thru(data && data.ledger,   normaliseLedger);
+
+      if (!clean.length && !inLed.length && !inAcc.length) return toast('Nothing usable in that file');
+      const skipped = rows.length - clean.length;
       const budget = data && isFinite(Number(data.budget)) ? Number(data.budget) : null;
       const have = new Set(all().map(e => e.id));
       const fresh = clean.filter(e => !have.has(e.id)).length;
@@ -2185,6 +2972,12 @@
             <div class="detail__t">${clean.length} ${clean.length===1?'expense':'expenses'} in this file</div>
             <div class="detail__s">${esc(fmtRange(clean))}${skipped ? ` · ${skipped} unreadable ${skipped===1?'row':'rows'} skipped` : ''}</div>
           </div>
+          ${(inAcc.length || inLed.length) ? `<p class="cmp-note" style="margin:0 2px 6px;text-align:center">
+            Also in this file: ${[
+              inAcc.length ? `${inAcc.length} ${inAcc.length===1?'account':'accounts'}` : '',
+              inPpl.length ? `${inPpl.length} ${inPpl.length===1?'person':'people'}` : '',
+              inLed.length ? `${inLed.length} family ${inLed.length===1?'entry':'entries'}` : '',
+            ].filter(Boolean).join(' · ')}</p>` : ''}
           <button class="btn btn--primary btn--block btn--lg" style="margin-top:8px" data-act="import-merge">
             ${icon('i-plus')}Add the ${fresh} new ${fresh===1?'one':'ones'}
           </button>
@@ -2195,7 +2988,11 @@
           <p class="cmp-note" style="margin:8px 2px 20px;text-align:center">Your current expenses would be gone.</p>
         </div>
       `);
-      S.pendingImport = { list: clean, budget: budget };
+      S.pendingImport = {
+        list: clean, budget: budget,
+        accounts: inAcc, people: inPpl, moves: inMov, ledger: inLed,
+        notRecurring: Array.isArray(data && data.notRecurring) ? data.notRecurring : null,
+      };
     };
     reader.readAsText(file);
   }
@@ -2210,23 +3007,51 @@
   function applyImport(mode) {
     const p = S.pendingImport;
     if (!p) return;
+    const mergeById = (cur, add) => {
+      const have = new Set(cur.map(x => x.id));
+      return cur.concat(add.filter(x => !have.has(x.id)));
+    };
     if (mode === 'replace') {
       DB.expenses = p.list.slice();
+      DB.accounts = p.accounts.slice(); DB.people = p.people.slice();
+      DB.moves    = p.moves.slice();    DB.ledger = p.ledger.slice();
       DB.sample = false; DB.dismissed = true;
     } else {
       const have = new Set(all().map(e => e.id));
       DB.expenses = all().concat(p.list.filter(e => !have.has(e.id)));
+      DB.accounts = mergeById(DB.accounts, p.accounts);
+      DB.people   = mergeById(DB.people,   p.people);
+      DB.moves    = mergeById(DB.moves,    p.moves);
+      DB.ledger   = mergeById(DB.ledger,   p.ledger);
     }
     if (p.budget !== null && p.budget >= 0) DB.budget = Math.round(p.budget);
+    if (p.notRecurring) DB.notRecurring = p.notRecurring;
     S.pendingImport = null;
-    save(); closeSheet();
+    /* References have to be re-checked, not assumed: a merged expense can point at an
+       account this file didn't carry, and a settlement at an entry that isn't here. */
+    sanitise();
+    const ok = save();
+    closeSheet();
     S.view = 'home'; S.filterCat = null; S.query = '';
     render(); window.scrollTo(0, 0);
-    toast(`Restored — ${all().length} ${all().length===1?'expense':'expenses'} now`);
+    if (!ok) return toast('Restored here, but it could not be written to storage');
+    const led = DB.ledger.length;
+    toast(`Restored — ${all().length} ${all().length===1?'expense':'expenses'}`
+      + (led ? ` and ${led} family ${led===1?'entry':'entries'}` : '') + ' now');
   }
 
   function exportJSON() {
-    download('hisaab-backup-' + dayKey(new Date()) + '.json', JSON.stringify({ version: 1, exported: new Date().toISOString(), budget: DB.budget, expenses: sorted() }, null, 2), 'application/json');
+    download('hisaab-backup-' + dayKey(new Date()) + '.json', JSON.stringify({
+      version: 2,
+      exported: new Date().toISOString(),
+      budget: DB.budget,
+      expenses: sorted(),
+      /* v1 wrote only budget + expenses, so a restore quietly lost every preference.
+         The ledger must never join that list — it is the one thing in here that cannot
+         be reconstructed from memory once it is gone. */
+      accounts: DB.accounts, people: DB.people, moves: DB.moves, ledger: DB.ledger,
+      notRecurring: DB.notRecurring, theme: DB.theme, size: DB.size, lastAcc: DB.lastAcc,
+    }, null, 2), 'application/json');
     markBackedUp();
     toast('Backup downloaded — keep it somewhere safe');
   }
@@ -2355,17 +3180,17 @@
       case 'import-merge': applyImport('merge'); break;
       case 'import-replace': applyImport('replace'); break;
       case 'load-sample':
-        DB.expenses = sampleData(); DB.sample = true; DB.dismissed = false; save();
+        DB.expenses = sampleData(); wipeLedger(); DB.sample = true; DB.dismissed = false; save();
         // go('home') would no-op when we're already on home, so render directly
         S.confirmErase = false; S.view = 'home'; S.filterCat = null; S.query = '';
         render(); window.scrollTo(0, 0); toast('Sample data loaded');
         break;
       case 'erase':
         if (!S.confirmErase) { S.confirmErase = true; render(true); setTimeout(() => { S.confirmErase = false; if (S.view==='settings') render(true); }, 4000); }
-        else { DB.expenses = []; DB.sample = false; DB.dismissed = true; S.confirmErase = false; save(); render(true); toast('Everything erased'); }
+        else { DB.expenses = []; wipeLedger(); DB.sample = false; DB.dismissed = true; S.confirmErase = false; save(); render(true); toast('Everything erased'); }
         break;
       case 'fresh':
-        DB.expenses = []; DB.sample = false; DB.dismissed = true; save(); render(); toast('Ready for your first expense');
+        DB.expenses = []; wipeLedger(); DB.sample = false; DB.dismissed = true; save(); render(); toast('Ready for your first expense');
         break;
       case 'dismiss': DB.dismissed = true; save(); render(true); break;
       case 'ack-recovery': DB.recoveryAck = true; save(); render(true); break;
@@ -2373,6 +3198,148 @@
         DB.nudgeUntil = Date.now() + 30 * 86400000; save(); render(true);
         toast("We'll remind you in a month");
         break;
+
+      /* ---- accounts & family ----
+         Every writer here checks save(). A ledger entry that never reached disk while
+         the app said "Saved" is the one bug this whole feature exists to avoid. */
+      case 'pick-kind': case 'pick-acc': case 'pick-to': case 'pick-lkind': {
+        const grp = t.closest('.chips');
+        if (grp) $$('.chip', grp).forEach(c => c.setAttribute('aria-pressed', String(c === t)));
+        S.pick = S.pick || {};
+        S.pick[{ 'pick-kind': 'kind', 'pick-acc': 'acc', 'pick-to': 'to', 'pick-lkind': 'lkind' }[a]] = t.dataset.v || null;
+        break;
+      }
+
+      case 'pick-eacc': {
+        const grp = t.closest('.chips');
+        if (grp) $$('.chip', grp).forEach(c => c.setAttribute('aria-pressed', String(c === t)));
+        if (S.draft) S.draft.acc = t.dataset.v || null;
+        break;
+      }
+
+      case 'add-acc': openAccountSheet(); break;
+      case 'open-acc': openAccount(t.dataset.id); break;
+      case 'save-acc': {
+        const name = readText('accName', 24), paise = readPaise('accAmt', true);
+        if (!name) return toast('Give the account a name');
+        if (NAME_BAD.test(name)) return toast('A name can’t contain &lt; or &gt;');
+        if (paise == null) return toast('Type how much is in it right now');
+        const acc = normaliseAccount({ name: name, kind: (S.pick && S.pick.kind) || 'cash',
+          anchorPaise: paise, anchorTs: Date.now(), ts: Date.now() });
+        if (!acc) return toast('That doesn’t look right');
+        DB.accounts.push(acc);
+        const hadLast = DB.lastAcc;
+        if (!hadLast) DB.lastAcc = acc.id;
+        if (!save()) { DB.accounts.pop(); DB.lastAcc = hadLast; return toast('Could not save — storage is full or blocked'); }
+        closeSheet(); render(); toast(`${esc(acc.name)} added`);
+        break;
+      }
+      case 'archive-acc': {
+        const acc = accById(t.dataset.id); if (!acc) return;
+        const wasLast = DB.lastAcc;
+        acc.archived = true;
+        if (DB.lastAcc === acc.id) DB.lastAcc = '';
+        if (!save()) { acc.archived = false; DB.lastAcc = wasLast; return toast('Could not save'); }
+        closeSheet(); render(); toast(`${esc(acc.name)} put away — nothing was deleted`);
+        break;
+      }
+
+      case 'reconcile': openReconcile(t.dataset.id); break;
+      case 'save-recon': {
+        const pk = S.pick || {}, acc = accById(pk.acc);
+        if (!acc) return;
+        const actual = readPaise('reconAmt', true);
+        if (actual == null) return toast('Type what is actually there');
+        const diff = actual - pk.expected;
+        const wasP = acc.anchorPaise, wasT = acc.anchorTs;
+        let added = null;
+        if (diff !== 0) {
+          added = normaliseMove({ kind: 'adjust', paise: diff, acc: acc.id, ts: Date.now(),
+            note: diff < 0 ? 'Less than expected' : 'More than expected' });
+          if (added) DB.moves.push(added);
+        }
+        // The anchor moves even when it matched: a shorter gap between checks is less
+        // room for the next drift to hide in.
+        acc.anchorPaise = actual; acc.anchorTs = Date.now();
+        if (!save()) {
+          acc.anchorPaise = wasP; acc.anchorTs = wasT;
+          if (added) DB.moves.pop();
+          return toast('Could not save — storage is full or blocked');
+        }
+        closeSheet(); render();
+        toast(diff === 0 ? 'Checked — it matched' : `Checked · ${esc(moneySignedP(diff))} unaccounted for`);
+        break;
+      }
+
+      case 'money-in':   openMoney('in',   t.dataset.id); break;
+      case 'money-out':  openMoney('out',  t.dataset.id); break;
+      case 'money-move': openMoney('xfer', t.dataset.id); break;
+      case 'save-money': {
+        const pk = S.pick || {}, paise = readPaise('mAmt');
+        if (paise == null) return toast('Type an amount');
+        if (!pk.acc) return toast('Pick an account');
+        if (pk.kind === 'xfer' && !pk.to) return toast('Pick where it went');
+        if (pk.kind === 'xfer' && pk.to === pk.acc) return toast('Pick two different accounts');
+        const mv = normaliseMove({ kind: pk.kind, paise: paise, acc: pk.acc, toAcc: pk.to,
+          note: readText('mNote', 60), ts: Date.now() });
+        if (!mv) return toast('That doesn’t look right');
+        DB.moves.push(mv);
+        if (!save()) { DB.moves.pop(); return toast('Could not save — storage is full or blocked'); }
+        closeSheet(); render(); toast(`Saved · ${esc(moneyP(paise))}`);
+        break;
+      }
+
+      case 'add-person':  openPersonSheet(); break;
+      case 'open-person': openPerson(t.dataset.id); break;
+      case 'save-person': {
+        const name = readText('pName', 24);
+        if (!name) return toast('Type a name');
+        if (NAME_BAD.test(name)) return toast('A name can’t contain &lt; or &gt;');
+        const per = normalisePerson({ name: name, ts: Date.now() });
+        if (!per) return toast('That doesn’t look right');
+        DB.people.push(per);
+        if (!save()) { DB.people.pop(); return toast('Could not save'); }
+        closeSheet(); render(); toast(`${esc(per.name)} added`);
+        break;
+      }
+
+      case 'lend': openLend(t.dataset.id, t.dataset.v); break;
+      case 'save-lend': {
+        const pk = S.pick || {}, paise = readPaise('lAmt');
+        if (paise == null) return toast('Type an amount');
+        const lkind = pk.lkind || 'unclear';
+
+        /* A repayment has to actually discharge something, oldest debt first. Without
+           this the net comes out right while "still out there" keeps listing money that
+           already came back — a confident wrong number, which is the one thing here
+           that must never happen. */
+        let settles = [];
+        if (lkind === 'repay') {
+          let left = paise;
+          const want = pk.dir === 'in' ? 'out' : 'in';
+          DB.ledger.filter(l => !l.voided && l.person === pk.person && l.dir === want && Ledger.OBLIGATION[l.kind])
+            .sort((x, y) => x.ts - y.ts)
+            .forEach(l => {
+              if (left <= 0) return;
+              const open = Ledger.remaining(l, book());
+              if (open <= 0) return;
+              const take = Math.min(open, left);
+              settles.push({ id: l.id, paise: take });
+              left -= take;
+            });
+          if (!settles.length) return toast('There is nothing open to pay back — record it as a gift or a loan instead');
+        }
+
+        const en = normaliseLedger({ dir: pk.dir, person: pk.person, paise: paise,
+          kind: lkind, note: readText('lNote', 60), settles: settles,
+          acc: pk.acc || null, ts: Date.now(), enteredTs: Date.now() });
+        if (!en) return toast('That doesn’t look right');
+        DB.ledger.push(en);
+        if (!save()) { DB.ledger.pop(); return toast('Could not save — storage is full or blocked'); }
+        closeSheet(); render();
+        toast(`${pk.dir === 'out' ? 'You gave' : 'You got'} <b>${esc(moneyP(paise))}</b>`);
+        break;
+      }
     }
   });
 
@@ -2437,7 +3404,7 @@
      left the app instead of closing an open sheet, and Back from Insights exited
      rather than returning Home. Tabs and sheets now both push an entry, so Back
      does the obvious thing and screens are linkable. */
-  const VIEWS = ['home', 'insights', 'history', 'settings'];
+  const VIEWS = ['home', 'insights', 'history', 'settings', 'accounts', 'family'];
   let navLock = false;
   // Only drive history when we own the window. Embedded in a frame, pushing and
   // popping entries would hijack the host page's Back button.

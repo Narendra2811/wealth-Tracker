@@ -248,14 +248,26 @@ async function run() {
 
   /* ---------- recurring detection ---------- */
   describe('Recurring detection');
+  /* Counting calendar months back from "today" made this fixture fail on two unrelated
+     dates, both times making a correct detector look broken:
+       - run it on the 31st and setMonth() rolls short months together, so 1-month-ago and
+         2-months-ago land on the same day and the gaps come out [0, 61, 0];
+       - run it late in the month and the newest sighting lands more than 50 days back,
+         past the detector's recency rule.
+     So: find the most recent occurrence of `day` that has already happened, and step back
+     whole months from there. Stable on every date of the year. */
   const mk = (monthsAgo, day, amount, note, cat) => {
-    const d = new Date(); d.setMonth(d.getMonth() - monthsAgo); d.setDate(day); d.setHours(11, 0, 0, 0);
+    const now = new Date();
+    const d = new Date(); d.setHours(11, 0, 0, 0); d.setDate(1);
+    if (now.getDate() < day) d.setMonth(d.getMonth() - 1);   // this month's `day` hasn't arrived yet
+    d.setMonth(d.getMonth() - monthsAgo);
+    d.setDate(day);
     return { id: note.replace(/\W/g, '') + monthsAgo, amount, catId: cat || 'bills', note, ts: d.getTime() };
   };
   seed([
-    mk(1, 8, 800, 'Broadband'), mk(2, 8, 800, 'Broadband'), mk(3, 8, 800, 'Broadband'),
+    mk(0, 8, 800, 'Broadband'), mk(1, 8, 800, 'Broadband'), mk(2, 8, 800, 'Broadband'),
     // three coffees a month apart but on scattered dates — must NOT be called a bill
-    mk(1, 3, 50, 'Coffee', 'food'), mk(2, 17, 50, 'Coffee', 'food'), mk(3, 27, 50, 'Coffee', 'food'),
+    mk(0, 3, 50, 'Coffee', 'food'), mk(1, 17, 50, 'Coffee', 'food'), mk(2, 27, 50, 'Coffee', 'food'),
   ]);
   await reload();
   nav('insights');
@@ -368,6 +380,145 @@ async function run() {
     eq(s.getAttribute('aria-modal'), 'true');
     ok(s.getAttribute('aria-label'));
     $('[data-act="close"]').click();
+  });
+
+  /* ---------- accounts, balances and the family ledger ----------
+     These cover money, and money between relatives is the one thing in this app that
+     must never be confidently wrong. The permutation test below is the important one:
+     a balance that depends on the order records happen to sit in is a bug that hides
+     for months and then surfaces during a real family argument. */
+
+  const T0 = Date.UTC(2024, 0, 10);
+  const FIXTURE = {
+    accounts: [
+      { id: 'aaaa-cash', name: 'Cash', kind: 'cash', anchorPaise: 500000, anchorTs: T0, archived: false, ts: T0 },
+      { id: 'aaaa-bank', name: 'Bank', kind: 'bank', anchorPaise: 5000000, anchorTs: T0, archived: false, ts: T0 },
+    ],
+    people: [{ id: 'pppp-priya', name: 'Priya', ts: T0 }],
+    moves: [
+      { id: 'm-1', kind: 'in',     paise: 200000,  acc: 'aaaa-cash', toAcc: null, ts: T0 + 1000, note: '' },
+      { id: 'm-2', kind: 'xfer',   paise: 1000000, acc: 'aaaa-bank', toAcc: 'aaaa-cash', ts: T0 + 2000, note: 'ATM' },
+      { id: 'm-3', kind: 'out',    paise: 50000,   acc: 'aaaa-cash', toAcc: null, ts: T0 + 3000, note: 'lost' },
+      { id: 'm-4', kind: 'adjust', paise: -30000,  acc: 'aaaa-cash', toAcc: null, ts: T0 + 4000, note: '' },
+    ],
+    ledger: [
+      { id: 'l-1', dir: 'out', person: 'pppp-priya', paise: 500000, kind: 'loan',    acc: 'aaaa-cash', ts: T0 + 5000, settles: [], note: '' },
+      { id: 'l-2', dir: 'in',  person: 'pppp-priya', paise: 200000, kind: 'repay',   acc: 'aaaa-cash', ts: T0 + 6000, settles: [{ id: 'l-1', paise: 200000 }], note: '' },
+      { id: 'l-3', dir: 'out', person: 'pppp-priya', paise: 100000, kind: 'vyavhar', acc: 'aaaa-cash', ts: T0 + 7000, settles: [], note: 'shagun' },
+      { id: 'l-4', dir: 'out', person: 'pppp-priya', paise: 75000,  kind: 'unclear', acc: 'aaaa-cash', ts: T0 + 8000, settles: [], note: '' },
+    ],
+    expenses: [
+      { id: 'x-1', amount: 200,  catId: 'food', note: '', ts: T0 + 9000,  acc: 'aaaa-cash' },
+      { id: 'x-2', amount: 1500, catId: 'home', note: '', ts: T0 + 10000, acc: 'aaaa-bank' },
+      { id: 'x-3', amount: 999,  catId: 'fun',  note: '', ts: T0 - 50000, acc: 'aaaa-cash' },   // before the anchor
+      { id: 'x-4', amount: 300,  catId: 'food', note: '', ts: T0 + 11000, acc: null },          // no account
+    ],
+  };
+
+  describe('Accounts — anchor plus what moved since');
+  seed(FIXTURE.expenses, { accounts: FIXTURE.accounts, moves: FIXTURE.moves,
+                           people: FIXTURE.people, ledger: FIXTURE.ledger, lastAcc: 'aaaa-cash' });
+  await reload();
+  const L = () => W.Ledger;
+  const BOOK = () => { const d = stored(); return { accounts: d.accounts, moves: d.moves,
+                       ledger: d.ledger, expenses: d.expenses, people: d.people }; };
+
+  it('adds income, subtracts spending, and moves between accounts both ways', () => {
+    eq(L().balance('aaaa-cash', BOOK()), 1125000, 'cash: 5000 +2000 +10000 -500 -300 -5000 +2000 -1000 -750 -200');
+    eq(L().balance('aaaa-bank', BOOK()), 3850000, 'bank: 50000 -10000 -1500');
+  });
+  it('ignores anything dated before the anchor', () => {
+    const b = BOOK();
+    b.expenses = b.expenses.concat([{ id: 'x-old', amount: 9999, catId: 'fun', note: '', ts: T0 - 1, acc: 'aaaa-cash' }]);
+    eq(L().balance('aaaa-cash', b), 1125000, 'an expense one millisecond before the anchor is already inside it');
+  });
+  it('ignores expenses with no account', () => {
+    const b = BOOK();
+    b.expenses = b.expenses.concat([{ id: 'x-na', amount: 5000, catId: 'fun', note: '', ts: T0 + 99999, acc: null }]);
+    eq(L().balance('aaaa-cash', b), 1125000, 'unassigned spending belongs to no balance');
+  });
+
+  it('gives the same answer whatever order the records are in', () => {
+    // A fold whose result depends on array order is the bug class that hides for months
+    // and then surfaces as a wrong number in the middle of a real disagreement.
+    const shuffle = (a, s) => { a = a.slice();
+      for (let i = a.length - 1; i > 0; i--) { const j = (i * 7919 + s * 104729) % (i + 1); const t = a[i]; a[i] = a[j]; a[j] = t; }
+      return a; };
+    const seen = {};
+    for (let n = 0; n < 500; n++) {
+      const b = BOOK();
+      const b2 = { accounts: shuffle(b.accounts, n), people: b.people, moves: shuffle(b.moves, n),
+                   ledger: shuffle(b.ledger, n), expenses: shuffle(b.expenses, n) };
+      seen[L().balance('aaaa-cash', b2) + '|' + L().balance('aaaa-bank', b2) + '|' + L().withPerson('pppp-priya', b2).net] = 1;
+    }
+    eq(Object.keys(seen).length, 1, '500 shuffles must agree');
+  });
+
+  describe('A transfer is not an expense');
+  it('money given to a person never reaches any category total', () => {
+    const d = stored();
+    const spent = d.expenses.reduce((s, e) => s + e.amount, 0);
+    eq(spent, 200 + 1500 + 999 + 300, 'only the four expenses count — the ₹5,000 loan is not spending');
+    ok(d.ledger.length === 4, 'and the loan lives in the ledger instead');
+  });
+  it('moving your own money between your own accounts is not spending either', () => {
+    const b = BOOK();
+    eq(b.expenses.filter(e => e.amount === 10000).length, 0, 'the ATM withdrawal created no expense');
+  });
+
+  describe('What is owed, and what is merely out there');
+  it('nets only within the pair, and only for real obligations', () => {
+    const st = L().withPerson('pppp-priya', BOOK());
+    eq(st.net, 300000, '5000 lent, 2000 came back');
+    eq(st.undecidedOut, 75000, 'undecided money is reported separately, never netted');
+  });
+  it('a gift-like vyavhar entry moves the balance but is never a debt', () => {
+    const st = L().withPerson('pppp-priya', BOOK());
+    ok(st.net === 300000, 'the 1000 shagun is not owed by anyone');
+    ok(L().balance('aaaa-cash', BOOK()) === 1125000, 'but the money really did leave the drawer');
+  });
+  it('a repayment reduces what is still out there', () => {
+    eq(L().parked(BOOK()).length, 1);
+    eq(L().parkedTotal(BOOK()), 300000, 'not 500000 — the 2000 that came back is discharged');
+  });
+  it('settle-up shows the arithmetic rather than a verdict', () => {
+    const su = L().settleUp('pppp-priya', BOOK());
+    eq(su.theyOwe, 300000); eq(su.youOwe, 0); eq(su.payment, 300000);
+  });
+
+  describe('Names are data, not markup');
+  seed([], {
+    accounts: [{ id: 'aaaa-ok', name: "Ma & Papa's cash", kind: 'cash', anchorPaise: 100000, anchorTs: T0, archived: false, ts: T0 }],
+    people: [{ id: 'pppp-baji', name: "Ba'ji", ts: T0 },
+             { id: 'pppp-evil', name: '<img src=x onerror="window.__x=1">', ts: T0 }],
+    ledger: [{ id: 'l-e', dir: 'out', person: 'pppp-baji', paise: 5000, kind: 'loan', acc: 'aaaa-ok', ts: T0 + 10, settles: [], note: '<b>note</b>' }],
+  });
+  await reloadTo('family');
+  it('drops a name containing markup, keeps a real one with an apostrophe', () => {
+    const d = stored();
+    eq(d.people.length, 1, 'the injected name was refused at the gate');
+    eq(d.people[0].name, "Ba'ji", "Ba'ji, D'Souza and Ma & Papa are real names and must survive");
+  });
+  it('renders names as inert text', () => {
+    eq(D.querySelectorAll('img[src="x"]').length, 0, 'no element was created from a name');
+    no(W.__x, 'nothing executed');
+    ok(text().indexOf("Ba'ji") >= 0, 'and the real name is actually shown');
+  });
+  it('keeps a hostile note inert too', () => {
+    $('[data-act="open-person"]').click();
+    no(W.__x, 'a note is text, not markup');
+    $('[data-act="close"]').click();
+  });
+
+  describe('Backups carry the ledger');
+  const beforeReload = stored();
+  await reload();                       // it() is synchronous — the await belongs out here
+  it('every collection survives a save and reload', () => {
+    const after = stored();
+    eq(after.accounts.length, beforeReload.accounts.length, 'accounts');
+    eq(after.people.length, beforeReload.people.length, 'people');
+    eq(after.ledger.length, beforeReload.ledger.length, 'ledger entries');
+    ok(Array.isArray(after.moves), 'moves');
   });
 
   /* ---------- summary ---------- */

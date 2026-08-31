@@ -3,9 +3,9 @@
    the safety net for tunnels, planes and dead signal. */
 // Bump this on release. Old caches are deleted on activate, so a stale shell can
 // never outlive a deploy even if a browser hangs on to the previous worker.
-const CACHE = 'hisaab-v1.2';
+const CACHE = 'hisaab-v1.3';
 const SHELL = [
-  './', './index.html', './app.css', './app.js',
+  './', './index.html', './app.css', './ledger.js', './app.js',
   './icon.svg', './icon-maskable.svg', './manifest.webmanifest',
 ];
 

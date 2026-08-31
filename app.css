@@ -1086,3 +1086,14 @@ html[data-theme="dark"] .tile{color:#14110C}
 /* The month divider in History already behaves like a ledger's month rule; make the
    figure sit hard against the right margin with the others. */
 .month-sep__v{ font-weight:700; color:var(--ink); }
+
+/* ---------- accounts & family ----------
+   A balance is the one figure in this app that can be negative, and the one people
+   will read fastest. Direction is carried by the word and the sign; colour is only
+   ever a reinforcement, never the sole signal. */
+.is-neg{ color:var(--bad); }
+.is-pos{ color:var(--good); }
+button.stat{ cursor:pointer; transition:background .18s, border-color .18s; }
+button.stat:hover{ background:var(--surface-3); }
+button.stat:active{ background:var(--surface-3); }
+.li__s .ic{ width:13px; height:13px; vertical-align:-2px; margin-right:4px; color:var(--ink-3); }

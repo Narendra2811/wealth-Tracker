@@ -78,6 +78,49 @@ Every bug listed in "What broke when I attacked it" below has a regression test 
 
 ## What it does
 
+**Accounts — where the money actually is**
+
+Tell Hisaab what you have right now: cash in hand, money in the bank, a UPI wallet. Every
+expense you record after that names which one it came out of, with the last-used account
+already selected — so the fast path is still amount, category, save.
+
+A balance is an **anchor plus what moved since**: the figure you last confirmed, plus
+everything dated after it. That one choice means setting up an account is a single number
+rather than a history, and nothing you recorded before today has to be reclassified.
+
+Money coming in, and money moving between your own accounts, are recorded as their own
+thing. **Withdrawing ₹3,000 from the bank is not spending** — your cash goes up, your bank
+goes down, and not one rupee reaches your categories.
+
+When the app's figure and your pocket disagree, you *check* the balance rather than fix it.
+The gap is written down as its own visible row and totalled back to you as "unexplained so
+far", because a correction that leaves no trace is how a ledger stops being worth trusting.
+
+**Family — who gave what to whom**
+
+The thing nobody in a family can ever remember: how much you gave your sister, what it was
+for, whether it came back. Record it once and the answer stops being a matter of opinion.
+
+> **₹5,000 with Priya since 12 Aug** — electrician
+
+The rule that makes it work: **giving money to a person is not an expense.** It lowers your
+cash and appears nowhere in your spending — the family is exactly as rich as it was a second
+earlier; only the location changed. Confuse those two and every number in the app is wrong.
+
+Money doesn't always come with a label, so it doesn't have to have one here. *Not decided
+yet* is a real answer and the default — it's counted separately and never quietly becomes a
+debt. There's also **vyavhar** for shagun, neg and money to parents: recorded in full, and
+structurally never owed by anyone.
+
+Everything is netted **only between the two of you**, never across three people, and a
+settle-up shows the arithmetic rather than a verdict:
+
+> You gave ₹5,000 (12 Aug, electrician). She gave ₹3,000 (2 Sep, petrol). ₹3,000 cancels.
+> She pays you ₹2,000.
+
+None of this is shared with anyone. There is no sync, no account, no server, and no way to
+see another person's spending — deliberately, and it is not a feature that is coming.
+
 **Still to come — the bit most trackers miss**
 
 Hisaab reads your history and works out which expenses repeat monthly — rent, broadband,
@@ -187,6 +230,7 @@ a "senior" app:
 |---|---|
 | `index.html` | Shell and the inline SVG icon set |
 | `app.css` | Design tokens, light/dark themes, every component |
+| `ledger.js` | Balances and the family ledger, as pure functions. No DOM, no storage |
 | `app.js` | State, storage, analytics, visual components, views, interactions |
 | `sw.js` | Service worker — the offline shell |
 | `icon.svg` | App icon |
