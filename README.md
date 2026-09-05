@@ -1,10 +1,22 @@
 # Hisaab — your money, at a glance
 
-A personal expense tracker built around one idea: **you should understand what happened
-to your money within a few seconds of opening the app, without reading a single table.**
+**[Open it →](https://narendra2811.github.io/wealth-Tracker/)**
 
-No build step. No dependencies. No accounts, no servers, no network calls.
-Everything lives in your browser's local storage, on your device.
+Two things a household actually needs, in one app that fits in under half a megabyte and
+asks nothing of you:
+
+**Where your money went.** You should understand what happened to it within a few seconds
+of opening the app, without reading a single table.
+
+**Where your money *is*, and what has passed between you and the family.** How much is in
+cash, how much in the bank — and how much you gave your sister, what it was for, and
+whether it came back.
+
+No sign-up. No server. No network calls of any kind. No build step, no dependencies, no
+framework. Everything lives in your browser's local storage, on your device, and there is
+nowhere else for it to go.
+
+> `हिसाब` · *hisaab* — the account of things; what is owed and what is settled.
 
 ---
 
@@ -35,7 +47,9 @@ something to show you. A banner on the home screen clears it whenever you're rea
 There is nothing to build. Upload the folder; that's the deploy.
 
 Every path in the app is **relative**, so it works from a domain root *or* a subfolder
-(`you.github.io/tracker/`) with no configuration. This is tested, not assumed.
+(`narendra2811.github.io/wealth-Tracker/`) with no configuration. This is tested, not
+assumed — the whole app gets staged in a subfolder and served, and the app, both scripts,
+the icons, the manifest and the service worker are all checked to resolve from there.
 
 **GitHub Pages** — push the repo, then Settings → Pages → deploy from `main` / root.
 **Netlify or Vercel** — drag the folder in, or connect the repo. No build command, no output
@@ -47,32 +61,58 @@ offline support — everything else still works.
 
 ### When you ship an update
 
-Bump `CACHE` in `sw.js` (`hisaab-v1.2` → `hisaab-v1.3`). The worker is network-first, so a
+Bump `CACHE` in `sw.js` (currently `hisaab-v1.4`). The worker is network-first, so a
 fresh visit already gets new files; bumping the name also clears the old cache on activate,
 so a browser holding a stale worker can't serve yesterday's app.
 
 ### Tests
 
-Open `tests.html` in a browser. That's the whole setup — no runner to install, no
-dependencies, nothing to build. It loads the real app in an iframe and drives it the way a
-user would, then prints a pass/fail list.
+Serve the folder and open `tests.html` — the same server you'd use to run the app. (It
+needs one: the harness reaches into an iframe and into `localStorage`, and browsers give
+`file://` frames an opaque origin, so it cannot run by double-clicking.) No runner to
+install, no dependencies, nothing to build. It loads the real app in an iframe, drives it
+the way a user would, and prints a pass/fail list.
 
-It covers the things that actually broke during development: the validation gate against
-hostile and malformed records, the XSS payload that once executed, damaged-storage
-recovery, the empty state, add/edit/delete/undo, double-tap Save, search by note and by
-amount, recurring detection (including that scattered spends are *not* called a bill),
-browser history and Back-closes-sheet, CSV formula-injection escaping, horizontal overflow
-at every view, and accessibility basics.
+**95 assertions across 29 groups**, and they fall into three kinds:
 
-Every bug listed in "What broke when I attacked it" below has a regression test here.
+**Things that actually broke.** The validation gate against hostile and malformed records,
+the XSS payload that once executed, damaged-storage recovery, the empty state, add /
+delete / undo, double-tap Save, search by note and by amount, recurring detection
+(including that scattered spends are *not* called a bill), CSV formula-injection escaping,
+horizontal overflow, and accessibility basics.
+
+**Rules, not implementations.** That a transfer between your own accounts never reaches a
+category total. That a debt is settled once and not twice. That a fund counts as your
+spending *or* as a debt, never both. That mutual debts netting to zero is not the same as
+settled. That striking an entry out leaves it readable. That a backup carries the ledger.
+
+**Properties over states nobody would hand-write.** One test builds 160 deliberately
+hostile ledger entries — nonsensical settlements, random struck-out and discharged flags,
+half the funds missing their other half — pushes them through the repair pass, and asserts
+six invariants across the lot. Another shuffles every record forty ways and asserts the
+balances come out identical, because a money figure that depends on array order is a bug
+that hides for months.
+
+Not everything is covered, and the file says so where it isn't. Four of the ten defects in
+the table below have no regression test — multi-tab loss, the import cap, the blank
+treemap, and emoji truncation were each fixed and verified by hand. One behaviour is
+deliberately untested with the reason written in place: forcing it meant overriding
+`Storage.prototype`, which silently broke every test after it. A test that corrupts the
+suite is worse than no test.
 
 ### Checked before release
 
-- Served from a subfolder — app, icons, manifest and service worker all resolve
+- Served from a subfolder — app, both scripts, icons, manifest and service worker all resolve
 - Killed the server and reloaded — full app, all data, from cache
 - Content Security Policy verified by *trying* to run an injected inline handler: the
   attribute lands in the DOM, never compiles, never fires
 - No external requests of any kind — no CDN, no fonts, no analytics, no telemetry
+- `ledger.js` deleted from the running app — Home still renders and stays reachable, because
+  a second script file is a second thing that can fail to arrive
+- Every write path with storage refusing writes — the record is kept for the session and
+  the app says plainly that nothing is being stored
+- 5,000 expenses — Home renders in single-digit milliseconds, Insights in ~23 ms
+- Both themes at all three text sizes on a 360 px screen — no horizontal overflow anywhere
 
 ---
 
@@ -149,6 +189,11 @@ in one tap, or tell Hisaab it guessed wrong.
 **Home — "what happened to my money?"**
 - Today's spend as one large, glanceable number, with a mood read on the day
   (*Calm · Steady · Heavy*) based on your own 30-day normal — not an arbitrary threshold
+- **Right now you have** — your total on hand and each account's balance, with a quiet note
+  when one hasn't been checked in a while. Appears once you make an account, not before
+- **Family** — each person and where you stand, said in words with a direction arrow, never
+  in colour alone. No rupee figure for the family total sits on the first screen: a balance
+  that gets glanced at is a balance that gets read aloud at a gathering
 - How today compares to yesterday, in rupees and direction
 - A 7-day rhythm chart with your daily-average line drawn across it
 - A proportion bar of exactly where today's money went, by category
@@ -187,15 +232,25 @@ what you actually buy inside it.
 **Add an expense — about three seconds**
 - Big number pad, ten large category tiles, one tap each
 - Quick-repeat chips for the things you buy over and over, at the price you usually pay
+- **Paid from** — your accounts as chips, with the last one you used already selected, so
+  the fast path stays amount, category, save. The row only appears once you have accounts,
+  and "Not sure" is always one tap away
 - Optional note, Today / Yesterday / any date
 - On a keyboard: `n` opens it, digits type, `Enter` saves, `Esc` closes
 
 **Settings**
+- **Your money** — Accounts and Family, with live counts and your total on hand
 - Auto / Light / Dark theme
 - Three text sizes — the whole interface scales, not just the body copy
 - Monthly budget
-- Export to CSV or JSON, **restore from a backup** (merge or replace, with a preview of
-  what's in the file first), reload the sample, or erase everything
+- **Save a backup (JSON)** — carries everything: expenses, accounts, people, the family
+  ledger. **Restore** merges or replaces, and the preview counts all of it before you
+  commit to anything
+- **Save as a spreadsheet (CSV)** — expenses only, and the app says so rather than letting
+  you believe otherwise. It gains an Account column only if you have accounts, so a file
+  someone's spreadsheet has been reading for months doesn't change shape underneath them.
+  It also no longer marks your data "backed up", because a CSV cannot restore the ledger
+- Reload the sample, or erase everything — both now say what they would take with them
 
 **Works offline.** A service worker caches the app shell, so once you've opened it
 it keeps working with no signal — on a train, on a plane, in a basement.
@@ -205,7 +260,14 @@ it keeps working with no signal — on a train, on a plane, in a basement.
 ## Taking care of your data
 
 Everything living in one browser is the privacy promise *and* the risk, so Hisaab is
-honest about it rather than quiet:
+honest about it rather than quiet.
+
+**Nothing is shared with anyone, including the family.** The ledger records what passed
+between you and them; it does not send anything anywhere, and there is no screen on which
+one person can see another person's spending. That was asked for and deliberately not
+built — it is the only part of this idea that would have required a server and an account,
+and the goal behind it ("who has room to help right now?") is better served by asking than
+by a permanent feed. Each phone keeps its own book.
 
 - Once you have 30+ expenses of your own, a calm banner points out they exist in exactly
   one place and offers to save a backup. "Not now" snoozes it for a month; taking a
@@ -224,7 +286,10 @@ honest about it rather than quiet:
 Built to be comfortable for a 20-year-old and a 70-year-old without ever looking like
 a "senior" app:
 
-- Touch targets are at least 48px; most are 56–64px
+- Primary controls are 56–64px; the keypad, the FAB and every list row are comfortably
+  past 48px. A few secondary controls sit lower — the segmented period switch is 42px and
+  the sample banner's dismiss is 34px — which clears WCAG AA and not AAA. Measured, not
+  assumed, and stated here rather than rounded up
 - Every icon is paired with a text label — colour is never the only signal
 - Text-size control scales the entire interface (`rem`-based throughout)
 - Full keyboard support, visible focus rings, ARIA labels on every control
@@ -242,8 +307,17 @@ a "senior" app:
 | `ledger.js` | Balances and the family ledger, as pure functions. No DOM, no storage |
 | `app.js` | State, storage, analytics, visual components, views, interactions |
 | `sw.js` | Service worker — the offline shell |
+| `tests.html` | The whole test suite. Open it in a browser; there is no runner |
+| `HOW-IT-WORKS.md` | One page for whoever maintains this — the rules and why they exist |
 | `icon.svg` | App icon |
 | `manifest.webmanifest` | Makes it installable |
+
+Two script files, and that is deliberate: `ledger.js` holds every calculation about money
+as **pure functions** — hand it records, get a number back, no DOM and no storage
+anywhere near it. `app.js` is one IIFE with no seam in it, and the one thing in this app
+that must never be quietly wrong is a figure about money between relatives. Pure functions
+can be handed the same records in a thousand different orders and asserted identical.
+That is not a style preference; it is the only reason the property tests above can exist.
 
 ---
 
@@ -301,6 +375,62 @@ wrong, and only testing the fix rather than trusting it caught that.
 
 ---
 
+## What broke when I added money between people
+
+The accounts-and-family work went through ten rounds of adversarial review before it was
+called finished, and fixed around fifty real defects. The interesting thing is not the
+count. It is that **most of them were introduced while fixing the round before.**
+
+A few worth naming, because they are all the same species — a number that was confidently,
+quietly wrong:
+
+| Found | What happened |
+|---|---|
+| **Reconcile counted its own correction twice** | Two `Date.now()` reads, one for the correction row and one for the new anchor. When they landed in the same millisecond the balance moved by the gap *twice*. It only happened sometimes, which is worse than always. |
+| **Overpayment vanished** | Pay back ₹5,000 against a ₹3,000 debt and ₹3,000 settled while ₹2,000 evaporated. The app said "all settled" while you were owed money the other way. |
+| **Archiving erased money** | Putting an account away removed its balance from every total, while the toast said nothing was deleted. Archiving a *person* did the same whenever two debts netted to zero — and money owed **to** them then appeared on no screen at all, because "still out there" only walks one direction. |
+| **The same rupees charged twice** | A purchase you funded and counted as your own spending was both an expense *and* a debt still owed. |
+| **One debt settled twice** | The settlement accumulator was declared inside the per-entry loop, so two repayments could each fully discharge the same ₹5,000 and the second one's money disappeared. |
+
+And then the ones that were not in the new feature at all, but in the tracker that was
+already working — these were the worst, because they hit people who never open Accounts:
+
+- **A blank Home screen.** `ledger.js` is a second script, so it can fail to arrive; one
+  unguarded call left the first screen empty and its tab unreachable. The service worker
+  was making it worse by serving `index.html` for the missing script, which parsed as
+  garbage so the global silently never existed — far harder to diagnose than a script that
+  plainly failed.
+- **No expense could be entered in a private window.** A rollback added for the ledger
+  discarded the record, contradicting the app's own banner promising expenses last the
+  session. Theme and budget changes still worked, so the app was half-writable with nothing
+  explaining the difference.
+- **Merge-import wiped every "not a regular bill" decision** — on a sheet whose own words
+  are "Keeps everything you have now."
+
+### What actually made it stop
+
+Guarding each door failed repeatedly, because there is always another door. What held was
+moving the rule to the one place every stored byte passes through:
+
+> A fund is discharged **if and only if** the spending record that discharged it exists.
+> Recomputed on every load, not maintained at each call site.
+
+That single change fixed three separate bugs at once and closed off the whole family of
+them — a companion record can vanish down paths that have nothing to do with the ledger
+(cleared with the expenses, rejected for a bad clock, skipped as a duplicate on import),
+and every one of those used to leave money missing from the categories *and* from what was
+owed, simultaneously, with nothing ever revisiting it.
+
+The other rule earned the same way: **reading is filtered, writing never is.** Making one
+accessor hide records had, one edit later, turned the importer into a deleter and the
+backup into a lossy one, because both wrote back through the filtered reader.
+
+Both are pinned by tests now, and written down in
+[`HOW-IT-WORKS.md`](HOW-IT-WORKS.md) — along with the one thing left to fix, why it was
+deliberately *not* bundled into that pass, and the two traps waiting for whoever does it.
+
+---
+
 ## A few implementation notes
 
 **The treemap** is a real squarified treemap (Bruls–Huizing–van Wijk), laid out in
@@ -351,4 +481,5 @@ money, rent lands on the 25th with the salary cycle.
 
 ---
 
-Your data never leaves the device. There is nowhere for it to go.
+Hisaab remembers what you wrote down. It cannot prove anything — it is a notebook, not a
+bank. Your data never leaves the device. There is nowhere for it to go.
