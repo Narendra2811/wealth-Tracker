@@ -1097,3 +1097,15 @@ button.stat{ cursor:pointer; transition:background .18s, border-color .18s; }
 button.stat:hover{ background:var(--surface-3); }
 button.stat:active{ background:var(--surface-3); }
 .li__s .ic{ width:13px; height:13px; vertical-align:-2px; margin-right:4px; color:var(--ink-3); }
+
+/* A corrected entry is struck out, not deleted — the row stays legible so "why did this
+   number change?" is still answerable later, by either person. */
+.is-struck{ opacity:.55; }
+.is-struck .li__t, .is-struck .item__v, .detail__v.is-struck{ text-decoration:line-through; }
+
+/* The direction of a debt is said three ways — the words above it, the sign, and this rule
+   underneath — because it is the one figure in the app that must never be misread, and
+   colour alone fails for the most common form of colour blindness. Solid is a settled
+   credit line, the way a paper ledger rules one; dashed is the side still open. */
+.detail__v.is-owed-you { border-bottom: 3px solid var(--good); padding-bottom: 6px; }
+.detail__v.is-owed-them{ border-bottom: 3px dashed var(--bad); padding-bottom: 6px; }

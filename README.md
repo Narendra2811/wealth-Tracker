@@ -112,6 +112,15 @@ yet* is a real answer and the default — it's counted separately and never quie
 debt. There's also **vyavhar** for shagun, neg and money to parents: recorded in full, and
 structurally never owed by anyone.
 
+Typed the wrong number? Tap the entry and change it, or **strike it out** — it stops counting
+but stays in the book, crossed through, so the reason a figure changed is still readable later.
+The one thing you can't do is strike out something that's already been paid back against; the
+app says so and tells you what to undo first.
+
+For *"I'll give you the money, you pay for it"*, tick **also count it as my spending** and pick
+a category. The purchase lands in your categories, the rupees leave your account exactly once,
+and nothing is left owing — because the money was spent on your thing, which was the whole point.
+
 Everything is netted **only between the two of you**, never across three people, and a
 settle-up shows the arithmetic rather than a verdict:
 

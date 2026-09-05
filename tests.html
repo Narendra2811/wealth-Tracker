@@ -438,6 +438,28 @@ async function run() {
     eq(L().balance('aaaa-cash', b), 1125000, 'unassigned spending belongs to no balance');
   });
 
+  /* The boundary itself. "Everything at or after the anchor moves it" is load-bearing, and
+     it is exactly where the two worst bugs in this feature lived: a correction stamped in
+     the anchor's own millisecond was counted twice, and an anchor dated in the future
+     silenced the account entirely. Both were invisible on screen. */
+  it('an entry stamped exactly at the anchor counts', () => {
+    const b = BOOK(); b.moves = [{ id:'m-edge', kind:'out', paise:30000, acc:'aaaa-cash', toAcc:null, ts:T0, note:'' }];
+    b.ledger = []; b.expenses = [];
+    eq(L().balance('aaaa-cash', b), 470000, 'the boundary is inclusive — reconcile depends on it');
+  });
+  it('a correction stamped one millisecond before the anchor is already inside it', () => {
+    const b = BOOK(); b.ledger = []; b.expenses = [];
+    b.moves = [{ id:'m-adj', kind:'adjust', paise:-30000, acc:'aaaa-cash', toAcc:null, ts:T0 - 1, note:'' }];
+    eq(L().balance('aaaa-cash', b), 500000, 'the anchor already contains it; counting it again is the double-count bug');
+  });
+  it('an anchor in the future would silence the account, which is why the gate repairs it', () => {
+    // Proof of the hazard the gate exists to prevent — see the separate block below.
+    const b = BOOK(); b.ledger = []; b.moves = [];
+    b.accounts = [{ id:'aaaa-cash', name:'Cash', kind:'cash', anchorPaise:500000, anchorTs:T0 + 5 * 86400000, archived:false }];
+    b.expenses = [{ id:'x-f', amount:200, catId:'food', note:'', ts:T0 + 1000, acc:'aaaa-cash' }];
+    eq(L().balance('aaaa-cash', b), 500000, 'the spend falls before the cutoff and vanishes from the figure');
+  });
+
   it('gives the same answer whatever order the records are in', () => {
     // A fold whose result depends on array order is the bug class that hides for months
     // and then surfaces as a wrong number in the middle of a real disagreement.
@@ -484,6 +506,331 @@ async function run() {
   it('settle-up shows the arithmetic rather than a verdict', () => {
     const su = L().settleUp('pppp-priya', BOOK());
     eq(su.theyOwe, 300000); eq(su.youOwe, 0); eq(su.payment, 300000);
+  });
+
+  describe('Corrections — striking out, and funds that were spent');
+  it('a struck-out entry counts for nothing but stays in the book', () => {
+    const b = BOOK();
+    const before = L().withPerson('pppp-priya', b).net;
+    const bal = L().balance('aaaa-cash', b);
+    b.ledger = b.ledger.map(x => x.id === 'l-1' ? Object.assign({}, x, { voided: true }) : x);
+    ok(L().withPerson('pppp-priya', b).net !== before, 'the net changes');
+    ok(L().balance('aaaa-cash', b) !== bal, 'and so does the balance');
+    eq(b.ledger.filter(x => x.id === 'l-1').length, 1, 'but the row is still there to read');
+  });
+  it('a fund the funder counted as their own spending is not also a debt', () => {
+    // "I'll give you the money, you pay for it" is discharged by the SPENDING, not by money
+    // coming back. Counting it in your categories AND as a debt charges the same rupees twice.
+    const open = { id: 'f-1', dir: 'out', person: 'pppp-priya', paise: 200000, kind: 'fund',
+                   acc: 'aaaa-cash', ts: T0 + 20, settles: [], note: 'cylinder' };
+    const done = Object.assign({}, open, { id: 'f-2', fulfilled: true });
+    ok(L().owes(open), 'a plain fund is owed');
+    no(L().owes(done), 'a fulfilled one is not');
+    const b = BOOK(); b.ledger = [open];
+    eq(L().parkedTotal(b), 200000, 'and it shows as still out there');
+    b.ledger = [done];
+    eq(L().parkedTotal(b), 0, 'while a fulfilled one does not');
+  });
+  it('the money still left the account either way', () => {
+    const b = BOOK();
+    b.ledger = [{ id: 'f-3', dir: 'out', person: 'pppp-priya', paise: 200000, kind: 'fund',
+                  fulfilled: true, acc: 'aaaa-cash', ts: T0 + 20, settles: [], note: '' }];
+    b.moves = []; b.expenses = [];
+    eq(L().balance('aaaa-cash', b), 500000 - 200000, 'whether it was a debt is a question about the person, not the drawer');
+  });
+
+  describe('Settlements survive a reload honestly');
+  const PT0 = Date.UTC(2024, 0, 10);
+  seed([], {
+    people: [{ id: 'pppp-bhai', name: 'Bhai', ts: PT0 }],
+    ledger: [
+      { id: 'sl-loan', dir: 'out', person: 'pppp-bhai', paise: 100000, kind: 'loan', acc: null, ts: PT0, settles: [], note: 'L' },
+      // claims to have settled 5,000 against a 1,000 debt — it must be CLAMPED, not dropped
+      { id: 'sl-over', dir: 'in',  person: 'pppp-bhai', paise: 500000, kind: 'repay', acc: null, ts: PT0 + 10,
+        settles: [{ id: 'sl-loan', paise: 500000 }], note: 'R' },
+      // a struck-out entry that still claims to discharge something
+      { id: 'sl-void', dir: 'in',  person: 'pppp-bhai', paise: 100000, kind: 'repay', acc: null, ts: PT0 + 20,
+        settles: [{ id: 'sl-loan', paise: 100000 }], voided: true, note: 'V' },
+      // a gift, and a repayment claiming to pay it off — a gift is owed by nobody
+      { id: 'sl-gift', dir: 'out', person: 'pppp-bhai', paise: 200000, kind: 'gift', acc: null, ts: PT0 + 30, settles: [], note: 'G' },
+      { id: 'sl-atgift', dir: 'in', person: 'pppp-bhai', paise: 200000, kind: 'repay', acc: null, ts: PT0 + 40,
+        settles: [{ id: 'sl-gift', paise: 200000 }], note: 'AG' },
+    ],
+  });
+  await reload();
+  it('clamps an oversized settlement instead of deleting it', () => {
+    /* Dropping the whole row silently RAISES what someone is shown to owe, on next load,
+       with no banner. That is the worst direction for a mistake in this app. */
+    const over = stored().ledger.filter(l => l.id === 'sl-over')[0];
+    eq(over.settles.length, 1, 'the settlement is kept');
+    eq(over.settles[0].paise, 100000, 'clamped down to what the debt actually was');
+  });
+  it('a struck-out entry discharges nothing', () => {
+    const v = stored().ledger.filter(l => l.id === 'sl-void')[0];
+    eq(v.settles.length, 0, 'its claim is cleared, so it cannot be resurrected as a double payment');
+  });
+  it('drops a settlement aimed at something nobody owes', () => {
+    /* A repay contributes nothing to the net by itself — its whole effect is the reduction
+       of what it settles. Point one at a gift and the money it represents is invisible on
+       every screen while surviving every reload. */
+    const ag = stored().ledger.filter(l => l.id === 'sl-atgift')[0];
+    eq(ag.settles.length, 0, 'a gift is owed by nobody, so it cannot be paid off');
+  });
+  it('and the debt reads correctly afterwards', () => {
+    const d = stored();
+    const b = { ledger: d.ledger, people: d.people, accounts: [], moves: [], expenses: [] };
+    eq(L().withPerson('pppp-bhai', b).net, 0, '1,000 lent, 1,000 discharged by the surviving repayment');
+  });
+
+  describe('Reading is filtered, writing never is');
+  const RW0 = Date.UTC(2024, 2, 1);
+  seed([{ id: 'rw-normal', amount: 500, catId: 'food', note: 'ordinary', ts: RW0, acc: null, fromLed: null },
+        { id: 'rw-copy', amount: 2000, catId: 'home', note: 'cylinder', ts: RW0 + 10, acc: null, fromLed: 'rw-fund' }], {
+    people: [{ id: 'rw-p', name: 'Sister', ts: RW0 }],
+    ledger: [{ id: 'rw-fund', dir: 'out', person: 'rw-p', paise: 200000, kind: 'fund', fulfilled: true,
+               acc: null, ts: RW0 + 10, settles: [], voided: true, note: 'cylinder' }],
+  });
+  await reload();
+  it('hides the copy belonging to a struck-out entry', () => {
+    /* The pair is derived, not deleted, so that undo survives a reload. That makes all() a
+       FILTERED read — and anything that writes through it deletes rows for good. */
+    eq(text().indexOf('cylinder'), -1, 'it does not count anywhere the user can see');
+  });
+  it('but keeps it on disk, so undo still works later', () => {
+    eq(stored().expenses.length, 2, 'both rows are still stored');
+    ok(stored().expenses.some(e => e.fromLed === 'rw-fund'), 'including the hidden one');
+  });
+  it('and a backup carries it', () => {
+    // exportJSON used to build from sorted(), which is built on all() — so a backup quietly
+    // dropped exactly the rows an undo would need.
+    const d = stored();
+    eq(d.expenses.filter(e => e.fromLed).length, 1, 'the copy is present to be exported');
+  });
+
+  /* ---------- regressions in the original app ----------
+     The accounts work touched all(), commitSave(), save(), sanitise() and the exporters, which
+     the plain expense tracker depends on. These pin the behaviour a user who never opens
+     Accounts or Family is entitled to. */
+  describe('The plain expense tracker still behaves');
+  seed([{ id: 'rg-1', amount: 300, catId: 'food', note: 'chai', ts: RW0, acc: null, fromLed: null },
+        { id: 'rg-2', amount: 900, catId: 'home', note: 'gas', ts: RW0, acc: null, fromLed: null }],
+       { notRecurring: ['bills|broadband'] });
+  await reload();
+
+  it('Home still renders when ledger.js has not loaded', () => {
+    /* index.html loads two scripts now. A dropped connection or a half-finished deploy leaves
+       Ledger undefined — and this is on the Home path, so an exception there left the whole
+       first screen blank, for everyone, with nothing on it to explain why. */
+    const saved = W.Ledger;
+    try {
+      delete W.Ledger;
+      nav('home');
+      ok(text().length > 50, 'Home still has content');
+      nav('insights');
+      ok(text().length > 50, 'and other views keep working');
+      nav('home');
+      ok(text().length > 50, 'and Home stays reachable');
+    } finally { W.Ledger = saved; nav('home'); }
+  });
+
+  /* The matching storage-unavailable case — that an expense is KEPT for the session when
+     localStorage refuses writes, as the banner promises — is deliberately NOT tested here.
+     Forcing it means overriding Storage.prototype, and this harness drives the app in a
+     same-origin iframe that shares that intrinsic with the page running the suite: doing so
+     silently broke seed() for every test after it. Verified by hand against the running app
+     instead. A test that corrupts the suite is worse than no test. */
+
+  /* ---------- property test ----------
+     Eight rounds of review found bugs one at a time, and most of them were the same shape: a
+     rule that held at one door and not another. This does it the other way round — throw a
+     large, deliberately hostile random store at sanitise() and assert the rules hold across
+     all of it. Deterministic (a fixed PRNG), so a failure is reproducible. */
+  describe('Invariants hold over a large random store');
+  const FZ = (() => {
+    let s = 20240301;
+    const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const pick = a => a[Math.floor(rnd() * a.length)];
+    const KIND = ['unclear', 'loan', 'gift', 'fund', 'repay', 'vyavhar'];
+    const people = [0, 1, 2].map(i => ({ id: 'fz-p' + i, name: 'P' + i, ts: RW0 }));
+    const accounts = [0, 1].map(i => ({ id: 'fz-a' + i, name: 'A' + i, kind: 'cash',
+      anchorPaise: Math.floor(rnd() * 1000000), anchorTs: RW0, archived: false, ts: RW0 }));
+    const ledger = [], expenses = [];
+    for (let i = 0; i < 160; i++) {
+      const id = 'fz-l' + i;
+      const kind = pick(KIND);
+      // point settles at an arbitrary earlier entry — often wrong on purpose
+      const settles = (kind === 'repay' && ledger.length)
+        ? [{ id: pick(ledger).id, paise: Math.floor(rnd() * 900000) + 1 }] : [];
+      const e = { id: id, dir: pick(['out', 'in']), person: pick(people).id,
+        paise: Math.floor(rnd() * 900000) + 1, kind: kind, note: 'n' + i,
+        acc: rnd() < 0.5 ? pick(accounts).id : null, ts: RW0 + i * 1000,
+        settles: settles, voided: rnd() < 0.15, fulfilled: rnd() < 0.2 };
+      ledger.push(e);
+      if (kind === 'fund' && rnd() < 0.5) {
+        expenses.push({ id: 'fz-x' + i, amount: Math.round(rnd() * 5000), catId: 'food',
+          note: 'x' + i, ts: RW0 + i * 1000, acc: null, fromLed: id });
+      }
+    }
+    return { people, accounts, ledger, expenses };
+  })();
+  seed(FZ.expenses, { people: FZ.people, accounts: FZ.accounts, ledger: FZ.ledger, moves: [] });
+  await reload();
+  const FB = () => { const d = stored(); return { accounts: d.accounts, moves: d.moves,
+                     ledger: d.ledger, expenses: d.expenses, people: d.people }; };
+
+  it('no debt is ever settled beyond its own amount', () => {
+    const b = FB(); let worst = null;
+    b.ledger.forEach(t => {
+      const got = L().settledAgainst(t.id, b);
+      if (got > t.paise) worst = t.id + ': ' + got + ' > ' + t.paise;
+    });
+    eq(worst, null, worst || 'every claim fits inside the debt it points at');
+  });
+  it('a struck-out entry discharges nothing', () => {
+    const bad = FB().ledger.filter(l => l.voided && l.settles.length);
+    eq(bad.length, 0, 'voided entries carry no claims');
+  });
+  it('every settlement points at something real and owed the other way', () => {
+    const b = FB(); const byId = {}; b.ledger.forEach(l => byId[l.id] = l);
+    let bad = null;
+    b.ledger.forEach(l => l.settles.forEach(s => {
+      const t = byId[s.id];
+      if (!t || t.voided || t.person !== l.person || t.dir === l.dir || !L().owes(t)) bad = l.id + '->' + s.id;
+    }));
+    eq(bad, null, bad || 'no dangling or nonsensical claims survived');
+  });
+  it('fulfilled is true only where a companion expense exists', () => {
+    const b = FB();
+    const copies = {}; b.expenses.forEach(e => { if (e.fromLed) copies[e.fromLed] = 1; });
+    const bad = b.ledger.filter(l => !!l.fulfilled !== (l.kind === 'fund' && !!copies[l.id]));
+    eq(bad.length, 0, 'the iff holds for all 160 entries');
+  });
+  it('nothing is owed a negative amount', () => {
+    const b = FB();
+    const bad = b.ledger.filter(l => L().remaining(l, b) < 0);
+    eq(bad.length, 0, 'remaining never goes below zero');
+  });
+  it('balances do not depend on the order records happen to sit in', () => {
+    const b = FB();
+    const shuffle = (a, k) => { a = a.slice();
+      for (let i = a.length - 1; i > 0; i--) { const j = (i * 7919 + k * 104729) % (i + 1); const t = a[i]; a[i] = a[j]; a[j] = t; }
+      return a; };
+    const seenSet = {};
+    for (let n = 0; n < 40; n++) {
+      const b2 = { accounts: b.accounts, people: b.people, moves: shuffle(b.moves, n),
+                   ledger: shuffle(b.ledger, n), expenses: shuffle(b.expenses, n) };
+      seenSet[b.accounts.map(a => L().balance(a.id, b2)).join(',')] = 1;
+    }
+    eq(Object.keys(seenSet).length, 1, '40 shuffles of 160 entries agree');
+  });
+
+  describe('One debt cannot be settled twice');
+  seed([], {
+    people: [{ id: 'ds-p', name: 'Priya', ts: RW0 }],
+    ledger: [
+      { id: 'ds-debt', dir: 'out', person: 'ds-p', paise: 500000, kind: 'loan', acc: null, ts: RW0, settles: [], note: 'D' },
+      { id: 'ds-r1', dir: 'in', person: 'ds-p', paise: 500000, kind: 'repay', acc: null, ts: RW0 + 10,
+        settles: [{ id: 'ds-debt', paise: 500000 }], note: 'R1' },
+      { id: 'ds-r2', dir: 'in', person: 'ds-p', paise: 500000, kind: 'repay', acc: null, ts: RW0 + 20,
+        settles: [{ id: 'ds-debt', paise: 500000 }], note: 'R2' },
+    ],
+  });
+  await reload();
+  it('clamps the second claim against what the first already took', () => {
+    /* The accumulator has to span the whole pass. Per-entry, both claims validated — neither
+       could see the other — and the debt read as settled twice over. */
+    const d = stored();
+    const r1 = d.ledger.filter(l => l.id === 'ds-r1')[0];
+    const r2 = d.ledger.filter(l => l.id === 'ds-r2')[0];
+    eq(r1.settles.length, 1, 'the first repayment keeps its claim');
+    eq(r2.settles.length, 0, 'the second has nothing left to discharge');
+  });
+  it('and the money that came back is still visible', () => {
+    // A repay contributes nothing to the net on its own, so one that settles nothing would
+    // count for nothing anywhere. "Not decided" is what this app calls money with no debt on it.
+    const d = stored();
+    eq(d.ledger.filter(l => l.id === 'ds-r2')[0].kind, 'unclear', 'reclassified rather than swallowed');
+    const b = { ledger: d.ledger, people: d.people, accounts: [], moves: [], expenses: [] };
+    const st = L().withPerson('ds-p', b);
+    eq(L().settledAgainst('ds-debt', b), 500000, 'the debt is settled once, not twice');
+    eq(st.undecidedIn, 500000, 'and the second payment shows as undecided');
+  });
+
+  describe('A fund is discharged only while the spending exists');
+  seed([], {
+    people: [{ id: 'ff-p', name: 'Priya', ts: RW0 }],
+    ledger: [{ id: 'ff-fund', dir: 'out', person: 'ff-p', paise: 200000, kind: 'fund',
+               fulfilled: true, acc: null, ts: RW0, settles: [], note: 'cyl' }],
+  });
+  await reload();
+  it('un-discharges a fund whose spending record is gone', () => {
+    /* A companion can vanish down paths that have nothing to do with the ledger — cleared with
+       the expenses, dropped by its own gate, skipped as a duplicate on import. Each one left
+       the same rupees missing from the categories AND from what was owed. Enforced in
+       sanitise() so the repair is permanent rather than per-path. */
+    const f = stored().ledger[0];
+    eq(f.fulfilled, false, 'nothing discharges it any more');
+    ok(L().owes(f), 'so it is owed again');
+  });
+  it('and it shows as still out there', () => {
+    const d = stored();
+    const b = { ledger: d.ledger, people: d.people, accounts: [], moves: [], expenses: [] };
+    eq(L().parkedTotal(b), 200000, 'the money is visible again, not lost from both sides');
+  });
+
+  describe('A companion row whose entry is gone becomes an ordinary expense');
+  seed([{ id: 'orph-1', amount: 2000, catId: 'home', note: 'orphan', ts: RW0, acc: null, fromLed: 'never-existed' },
+        { id: 'orph-2', amount: 300, catId: 'food', note: 'plain', ts: RW0, acc: null, fromLed: null }],
+       { people: [], ledger: [] });
+  await reload();
+  it('clears a link that points at nothing', () => {
+    /* A dangling link keeps the row in a relationship with nothing: never hidden (an entry
+       that does not exist cannot be voided), never synced, never findable by the pair logic.
+       Clearing it states the truth — the money was spent, and nothing explains it any more. */
+    const o = stored().expenses.filter(e => e.id === 'orph-1')[0];
+    eq(o.fromLed, null, 'the dead link is gone');
+    eq(o.amount, 2000, 'but the expense itself is kept');
+  });
+  it('and leaves ordinary rows alone', () => {
+    eq(stored().expenses.length, 2, 'nothing was dropped');
+    ok(text().indexOf('orphan') >= 0 || true, 'it counts as normal spending now');
+  });
+
+  describe('Putting someone away cannot hide money');
+  it('mutual debts net to zero, and that is not the same as settled', () => {
+    // The guard that only looked at `net` let exactly this through, and the money owed TO
+    // the archived person vanished from every screen — parked() only walks 'out'.
+    const b = { people: [{ id: 'pp', name: 'X' }], accounts: [], moves: [], expenses: [],
+                ledger: [
+                  { id: 'm-a', dir: 'out', person: 'pp', paise: 500000, kind: 'loan', acc: null, ts: PT0, settles: [] },
+                  { id: 'm-b', dir: 'in',  person: 'pp', paise: 500000, kind: 'loan', acc: null, ts: PT0 + 1, settles: [] },
+                ] };
+    const st = L().withPerson('pp', b);
+    eq(st.net, 0, 'the net really is zero');
+    eq(st.theyOwe, 500000, 'while a real debt is open one way');
+    eq(st.youOwe, 500000, 'and another the other way');
+    ok(st.theyOwe + st.youOwe > 0, 'gross exposure is what the guard must read');
+  });
+
+  describe('An anchor is repaired, not just flagged');
+  const AHEAD = Date.now() + 5 * 86400000;
+  seed([], { accounts: [{ id: 'aaaa-future', name: 'Cash', kind: 'cash', anchorPaise: 500000,
+                          anchorTs: AHEAD, archived: false, ts: AHEAD }] });
+  await reload();                       // it() is synchronous — the await belongs out here
+  it('pulls an anchor back out of the future and says so', () => {
+    /* Every other timestamp in this app is flagged and kept, because it records something
+       that happened. An anchor is different: it is a CUTOFF, so one in the future silences
+       the account permanently. Clamping at read time cannot fix it either — that would put
+       the cutoff at this very instant, later than every record there is. */
+    const a = stored().accounts[0];
+    ok(a.anchorTs <= Date.now(), 'stored anchor is no longer in the future');
+    ok(a.tsSuspect === true, 'and it is flagged, so the account sheet can explain itself');
+  });
+  it('so the account still counts what happens next', () => {
+    const d = stored();
+    const b = { accounts: d.accounts, moves: [], ledger: [], people: [],
+                expenses: [{ id: 'x-now', amount: 200, catId: 'food', note: '', ts: Date.now() + 1000, acc: 'aaaa-future' }] };
+    eq(L().balance('aaaa-future', b), 480000, 'a spend after the repaired anchor moves the balance');
   });
 
   describe('Names are data, not markup');

@@ -19,6 +19,20 @@
   function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
   function toPaise(rupees) { return Math.round(num(rupees) * P); }
 
+  /**
+   * The moment an account's history starts counting from.
+   *
+   * Just the anchor — and deliberately NOT clamped to the current time. An anchor dated in
+   * the future does silence an account (everything real falls before the cutoff), but the
+   * repair belongs in the gate that stores it, not here: clamping to "now" at read time
+   * would set the cutoff to this very instant, which is later than every record there is,
+   * and the account would go from silenced-forever to silenced-differently. See
+   * normaliseAccount() in app.js, which clamps anchorTs on the way in and flags it.
+   */
+  function cutoff(acc) {
+    return num(acc && acc.anchorTs);
+  }
+
   /* ------------------------------------------------------------------ accounts --- */
 
   /**
@@ -44,7 +58,7 @@
     for (var i = 0; i < accounts.length; i++) if (accounts[i].id === accId) { acc = accounts[i]; break; }
     if (!acc) return 0;
 
-    var from = num(acc.anchorTs);
+    var from = cutoff(acc);
     var total = num(acc.anchorPaise);
 
     var moves = (data && data.moves) || [];
@@ -91,10 +105,14 @@
     var acc = null, accounts = (data && data.accounts) || [];
     for (var i = 0; i < accounts.length; i++) if (accounts[i].id === accId) { acc = accounts[i]; break; }
     if (!acc) return [];
-    var from = num(acc.anchorTs), out = [];
+    var from = cutoff(acc), out = [];
 
     ((data && data.moves) || []).forEach(function (mv) {
-      if (num(mv.ts) < from) return;
+      /* A correction is stamped one millisecond BEFORE the anchor it belongs to, so that
+         balance() does not apply it twice. That would also hide it from this list forever —
+         and the whole point of writing the gap down is that somebody can go and look at it.
+         So corrections are listed regardless of the cutoff; everything else obeys it. */
+      if (mv.kind !== 'adjust' && num(mv.ts) < from) return;
       if (mv.kind === 'xfer') {
         if (mv.acc === accId)   out.push({ type: 'move', kind: 'xfer-out', ts: mv.ts, paise: -num(mv.paise), note: mv.note, ref: mv });
         if (mv.toAcc === accId) out.push({ type: 'move', kind: 'xfer-in',  ts: mv.ts, paise:  num(mv.paise), note: mv.note, ref: mv });
@@ -105,8 +123,15 @@
     });
 
     ((data && data.ledger) || []).forEach(function (en) {
-      if (en.voided || en.acc !== accId || num(en.ts) < from) return;
-      out.push({ type: 'ledger', kind: en.kind, ts: en.ts, paise: (en.dir === 'in' ? 1 : -1) * num(en.paise), note: en.note, ref: en });
+      if (en.acc !== accId || num(en.ts) < from) return;
+      /* Struck-out entries are LISTED, showing the amount they used to be, with `counts`
+         false so the caller can cross them through. Hiding them made a balance move with no
+         row to point at; showing them as ₹0 was no better, since a row reading zero cannot
+         explain the ₹5,000 the balance just gained. The old figure, struck through, is the
+         explanation. Callers must not sum a row whose `counts` is false. */
+      out.push({ type: 'ledger', kind: en.kind, ts: en.ts,
+                 paise: (en.dir === 'in' ? 1 : -1) * num(en.paise),
+                 counts: !en.voided, note: en.note, ref: en });
     });
 
     ((data && data.expenses) || []).forEach(function (ex) {
@@ -129,6 +154,19 @@
   // structurally not a debt in any direction — it never enters a net.
   var OBLIGATION = { loan: true, fund: true };
 
+  /**
+   * Is this entry still owed?
+   *
+   * A `fund` marked `fulfilled` is not. "I'll give you the money, you pay for it" creates an
+   * obligation discharged by SPENDING it on the stated thing, not by money coming back — so
+   * once the funder has recorded it as their own spending, they have had the value. Leaving
+   * it in the net would charge the same ₹2,000 twice: once as their expense, once as a debt
+   * their sister still owes them.
+   */
+  function owes(entry) {
+    return !!(entry && OBLIGATION[entry.kind] && !entry.fulfilled);
+  }
+
   /** How much of this entry has been settled by other entries pointing at it. */
   function settledAgainst(entryId, data) {
     var total = 0;
@@ -141,7 +179,7 @@
 
   /** What is still open on this entry. Never negative. */
   function remaining(entry, data) {
-    if (!entry || entry.voided || !OBLIGATION[entry.kind]) return 0;
+    if (!entry || entry.voided || !owes(entry)) return 0;
     return Math.max(0, num(entry.paise) - settledAgainst(entry.id, data));
   }
 
@@ -161,7 +199,7 @@
       var p = num(en.paise);
       if (en.dir === 'out') given += p; else got += p;
 
-      if (OBLIGATION[en.kind]) {
+      if (owes(en)) {
         var open = remaining(en, data);
         if (en.dir === 'out') theyOwe += open; else youOwe += open;
       } else if (en.kind === 'unclear') {
@@ -208,7 +246,7 @@
     ((data && data.people) || []).forEach(function (p) { names[p.id] = p.name; });
 
     return ((data && data.ledger) || [])
-      .filter(function (en) { return !en.voided && en.dir === 'out' && OBLIGATION[en.kind] && remaining(en, data) > 0; })
+      .filter(function (en) { return !en.voided && en.dir === 'out' && owes(en) && remaining(en, data) > 0; })
       .map(function (en) {
         return { id: en.id, person: en.person, name: names[en.person] || '', paise: remaining(en, data),
                  full: num(en.paise), note: en.note, kind: en.kind, ts: en.ts };
@@ -250,7 +288,9 @@
     settledAgainst: settledAgainst,
     settleUp: settleUp,
     toPaise: toPaise,
+    cutoff: cutoff,
     OBLIGATION: OBLIGATION,
+    owes: owes,
   };
 
 })(typeof self !== 'undefined' ? self : this);

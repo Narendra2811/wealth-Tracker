@@ -18,3 +18,7 @@ node_modules/
 # Exports produced by the app itself
 hisaab-*.json
 hisaab-*.csv
+
+# Private working notes. This is a public repo and info.txt carries an email address —
+# ignored so that a stray "git add ." can never publish it.
+info.txt

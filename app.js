@@ -127,6 +127,10 @@
       // would go missing from every expense. Shape is checked here; whether the id
       // still resolves to a real account is sanitise()'s job, once accounts are clean.
       acc: (e.acc != null && ID_OK.test(String(e.acc))) ? String(e.acc) : null,
+      // Set only on the copy written by "also count it as my spending", so that striking the
+      // ledger entry out can take its expense with it instead of leaving a phantom ₹2,000
+      // sitting in this month's categories with nothing to trace it to.
+      fromLed: (e.fromLed != null && ID_OK.test(String(e.fromLed))) ? String(e.fromLed) : null,
     };
   }
 
@@ -186,13 +190,26 @@
     const anchorPaise = toPaise(a.anchorPaise);       // may be 0, may be negative
     if (anchorPaise === null) return null;
     const t = normTs(a.anchorTs, Date.now());
+    /* An anchor is the ONE timestamp that must never sit in the future. It is a cutoff, not
+       a record: everything dated before it is treated as already inside the figure, so a
+       clock that was wrong when the account was made silences the account completely and
+       permanently — the balance freezes at the starting number, with no error and nothing
+       on screen to explain it. Clamping here, on the way in, is a one-time repair; the flag
+       is what lets the account sheet say so. Ledger entries are the opposite case and are
+       flagged rather than moved, because those are records of something that happened. */
+    const now = Date.now();
+    const ahead = t.ts > now;
     return {
       id: refId(a.id) || nid(),
       name: name,
       kind: ACC_KINDS.indexOf(a.kind) >= 0 ? a.kind : 'cash',
       anchorPaise: anchorPaise,
-      anchorTs: t.ts,
-      tsSuspect: !!t.suspect,
+      anchorTs: ahead ? now : t.ts,
+      // Sticky: the repair happens on the load that spots it, so a flag computed fresh each
+      // time would be false by the very next load and the account would never get to say
+      // what happened. It stays until the user checks the balance, which is the one action
+      // that actually re-establishes the number.
+      tsSuspect: !!t.suspect || ahead || !!a.tsSuspect,
       archived: !!a.archived,
       ts: Number(a.ts) || t.ts,
     };
@@ -258,7 +275,17 @@
       enteredTs: Number(l.enteredTs) || t.ts,
       tsSuspect: !!t.suspect,
       settles: settles,
+      // What it used to discharge, parked here while it is struck out. On the record rather
+      // than in memory, so Undo still works after a reload — and re-validated on the way back,
+      // never trusted.
+      wasSettles: (l.voided && Array.isArray(l.wasSettles)) ? l.wasSettles.map(s => {
+        const sid = refId(s && s.id), sp = toPaise(s && s.paise);
+        return (sid && sp !== null && sp > 0) ? { id: sid, paise: sp } : null;
+      }).filter(Boolean) : undefined,
       voided: !!l.voided,
+      // A `fund` whose funder has recorded it as their own spending. The obligation was
+      // discharged by the spending, not by money returning — see Ledger.owes().
+      fulfilled: !!l.fulfilled,
     };
   }
 
@@ -410,6 +437,71 @@
   }
 
   /**
+   * The moment the user records something of their own, this store stops being a demo.
+   *
+   * `sample` used to be cleared only by erase/fresh/import-replace, so anyone who simply
+   * dismissed the sample banner and started using the app carried the flag forever — and
+   * `backupBanner()` returns early on it, meaning the one prompt pointing at a real backup
+   * never appeared again for exactly the people with the most to lose.
+   */
+  function noLongerSample() {
+    if (!DB.sample) return;
+    DB.sample = false;
+    DB.dismissed = true;
+  }
+
+  /**
+   * Nobody stays put away while money is open with them.
+   *
+   * The archive guard runs once, at archive time — but their entries stay reachable from the
+   * account history afterwards, so striking out a repayment could revive a debt for someone
+   * already filtered out of every screen. Worse in one direction than the other: `parked()`
+   * only walks `dir === 'out'`, so money THEY owe still shows, while money YOU owe them
+   * appears nowhere at all. Bringing them back is the safe answer — never refuse a correction
+   * because of who it is about.
+   */
+  /* Gross exposure with one person, never the net. Owing each other ₹5,000 nets to zero while
+     two real debts are open, and undecided money sits outside the net on purpose. One function
+     so the guard, the button that triggers it, and the revive check cannot disagree — they did:
+     the label promised "nothing you recorded is lost" for a pair the handler then refused. */
+  function openWith(personId) {
+    const s = Ledger.withPerson(personId, book());
+    return s.theyOwe + s.youOwe + s.undecidedOut + s.undecidedIn;
+  }
+
+  function unarchiveIfOwed(personId) {
+    const per = personById(personId);
+    if (!per || !per.archived) return false;
+    if (openWith(personId) === 0) return false;
+    per.archived = false;
+    return true;
+  }
+
+  /** What an appending writer says when the write did not reach the device. See save(). */
+  const unsavedNote = () => storageIssue === 'full'
+    ? 'Kept here, but storage is full — nothing new is reaching this device'
+    : 'Kept here, but this browser is not storing anything — save a backup';
+
+  /**
+   * `fulfilled` is true if and only if the spending record that discharged the fund exists.
+   *
+   * Enforced in one place rather than at each door, because a companion expense can disappear
+   * down several paths that have nothing to do with the ledger — cleared along with the
+   * expenses, dropped by its own gate for a bad timestamp, skipped as a duplicate id on
+   * import. Each one left a fund discharged by spending that was no longer there, so the same
+   * rupees vanished from the categories AND from what was owed, at the same time. No
+   * legitimate state has `fulfilled` without a companion: it is only ever set when the copy
+   * was actually written.
+   */
+  function reconcileFulfilled() {
+    const copies = new Set(DB.expenses.filter(e => e.fromLed).map(e => e.fromLed));
+    DB.ledger.forEach(l => {
+      const should = l.kind === 'fund' && copies.has(l.id);
+      if (!!l.fulfilled !== should) l.fulfilled = should;
+    });
+  }
+
+  /**
    * Clearing expenses has to clear the ledger with them. An account's balance is an
    * anchor plus everything dated after it — leave the accounts behind and their anchors
    * now sit against data that no longer exists, or (after "load sample") against 105 days
@@ -452,20 +544,67 @@
     DB.ledger = cleanList(DB.ledger, normaliseLedger).filter(l => perIds.has(l.person));
     DB.ledger.forEach(l => { if (l.acc && !accIds.has(l.acc)) l.acc = null; });
 
+    /* A companion row whose ledger entry is gone entirely — a replace-import, a hand-edited
+       backup — is just an ordinary expense now. A dangling link keeps it in a relationship
+       with nothing: never hidden by all() (an entry that does not exist cannot be voided),
+       never synced by an edit, never findable by the pair logic. Clearing it states the plain
+       truth — the money was spent, and nothing explains it any more. Must run AFTER the
+       ledger pass so it is checked against the ids that actually survived. */
+    const ledIds = new Set(DB.ledger.map(l => l.id));
+    DB.expenses.forEach(e => { if (e.fromLed && !ledIds.has(e.fromLed)) e.fromLed = null; });
+
+    /* `fulfilled` means "the funder recorded this as their own spending", so it is true if and
+       only if that spending record still exists. Enforcing it HERE rather than at each door is
+       the point: a companion can disappear down several paths that have nothing to do with the
+       ledger — cleared with the expenses, dropped by its own gate for a bad timestamp, skipped
+       as a duplicate id on import — and each one left a fund discharged by spending that was no
+       longer there, so the money vanished from the categories AND from what was owed, at once.
+       sanitise() is the single place every stored byte passes through, which makes the repair
+       permanent instead of per-path. No legitimate state has fulfilled without a companion:
+       save-lend only sets it when the copy was actually written. */
+    reconcileFulfilled();
+
     // Settlements may only point at a real entry, owed the other way, with the same
     // person — and may never add up to more than the debt they claim to discharge.
     const byId = new Map(DB.ledger.map(l => [l.id, l]));
-    DB.ledger.forEach(l => {
+    /* One accumulator for the WHOLE pass, not one per entry. Per-entry, two repayments each
+       claiming the same ₹5,000 debt both validated — neither could see the other — so
+       settledAgainst() came to ₹10,000 against a ₹5,000 debt, remaining() clamped to zero and
+       the pair read as square while the second ₹5,000 existed in the account and nowhere in
+       what stood between the two people. Reachable by merging a backup that already held one
+       of the two repayments. Sorted first so the survivor is the same on every device. */
+    const room = new Map();
+    DB.ledger.slice().sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id))).forEach(l => {
       if (!l.settles.length) return;
-      let room = new Map();
-      l.settles = l.settles.filter(s => {
+      if (l.voided) { l.settles = []; return; }   // a struck-out entry discharges nothing
+      l.settles = l.settles.map(s => {
         const t = byId.get(s.id);
-        if (!t || t.id === l.id || t.person !== l.person || t.dir === l.dir) return false;
+        // Kind matters too: a settlement pointing at something that is no longer a debt
+        // discharges nothing, and a repay contributes nothing on its own — so the money it
+        // represents would be invisible on every screen while surviving every reload.
+        if (!t || t.voided || t.id === l.id || t.person !== l.person || t.dir === l.dir
+            || !Ledger.owes(t)) return null;
         const used = room.has(t.id) ? room.get(t.id) : 0;
-        if (used + s.paise > t.paise) return false;
-        room.set(t.id, used + s.paise);
-        return true;
-      });
+        /* Clamp, don't drop. Dropping a whole settlement because it overshoots by a rupee
+           silently RAISES what someone is shown to owe, on next load, with no banner — the
+           worst possible direction for a mistake in this app. Keeping as much as fits is
+           both closer to the truth and visible on the entry. */
+        const room_ = Math.max(0, t.paise - used);
+        const keep = Math.min(s.paise, room_);
+        if (keep <= 0) return null;
+        room.set(t.id, used + keep);
+        return { id: s.id, paise: keep };
+      }).filter(Boolean);
+    });
+
+    /* A repayment left with nothing to discharge is not a repayment. `repay` contributes
+       nothing to the net on its own — its whole effect is the reduction of what it settles —
+       so leaving it as one makes money that really came back count for nothing anywhere.
+       "Not decided" is this app's own name for money that moved with no debt attached to it,
+       which is the honest description, and it puts the amount back on screen in the undecided
+       figure rather than silently nowhere. Mirrors how save-lend treats an overpayment. */
+    DB.ledger.forEach(l => {
+      if (l.kind === 'repay' && !l.voided && !l.settles.length) l.kind = 'unclear';
     });
 
     if (DB.lastAcc && !accIds.has(DB.lastAcc)) DB.lastAcc = '';
@@ -479,10 +618,20 @@
   }
   let rev = 0;                       // bumped on every write; invalidates derived values
   /**
-   * Returns whether the write actually reached disk. A lost expense costs one
-   * forgotten chai; a lost ledger entry is "I recorded that ₹5,000 came back"
-   * with no evidence on either side. Every accounts/ledger write path checks this
-   * and refuses to close its sheet on false.
+   * Returns whether the write actually reached disk.
+   *
+   * Callers split on what they were doing, and the split is the rule:
+   *
+   *   - A writer that only APPENDS a new record keeps it and says nothing is being stored
+   *     (see unsavedNote). Memory-only is an announced mode — the banner promises expenses
+   *     added now last until the tab closes — so discarding the user's work would refuse the
+   *     app's core action in a private window while theme and budget changes still went
+   *     through, leaving it half-writable with nothing explaining the difference.
+   *
+   *   - A writer that MUTATES a record already on screen, or has to keep two records in step
+   *     (save-recon moves an anchor alongside its adjust row; save-led-edit moves a ledger
+   *     entry alongside its expense), rolls back and refuses. A half-applied correction reads
+   *     as applied — a wrong number, which is worse here than a missing one.
    */
   function save() {
     rev++;
@@ -602,7 +751,21 @@
   }
 
   /* ===================== analytics ===================== */
-  const all = () => DB.expenses;
+  /**
+   * Every expense the app should count.
+   *
+   * The one exclusion is the copy written by "also count it as my spending": it exists only
+   * because a ledger entry said so, so it stops counting the moment that entry is struck out.
+   * Deriving it here rather than deleting the row on strike-out is what makes the pair
+   * survive a reload — an undo that depends on something held in memory is not an undo, and
+   * the expense would otherwise be stranded in this month's categories with the entry that
+   * explained it gone.
+   */
+  const all = () => cached('all', () => {
+    if (!DB.ledger.length) return DB.expenses;
+    const dead = new Set(DB.ledger.filter(l => l.voided).map(l => l.id));
+    return dead.size ? DB.expenses.filter(e => !e.fromLed || !dead.has(e.fromLed)) : DB.expenses;
+  });
   const sorted = () => cached('sorted', () => all().slice().sort((a,b) => b.ts - a.ts));
 
   function inRange(from, to) { return all().filter(e => e.ts >= from && e.ts < to); }
@@ -1847,12 +2010,21 @@
   const liveAccounts = () => DB.accounts.filter(a => !a.archived);
   const hasAccounts  = () => liveAccounts().length > 0;
 
-  /* One object, so nobody can hand ledger.js half the picture and get a plausible
-     wrong answer. Memoised on rev like every other derived figure. */
+  /* One object, so nobody can hand ledger.js half the picture and get a plausible wrong
+     answer. Cheap to build and deliberately not cached — it is references, not data. */
   const book = () => ({ accounts: DB.accounts, moves: DB.moves, ledger: DB.ledger,
                         expenses: DB.expenses, people: DB.people });
+  // Memoised on rev, like every other derived figure — a render asks for a balance several
+  // times over. (An anchor stuck in the future is repaired in normaliseAccount, not here;
+  // ledger.js takes no clock, deliberately, so its arithmetic stays replayable.)
   const balanceOf   = id => cached('bal|' + id, () => Ledger.balance(id, book()));
   const totalOnHand = () => cached('onhand', () => liveAccounts().reduce((s, a) => s + balanceOf(a.id), 0));
+
+  /* An id is only a usable default if it still points at a live account. Archived accounts are
+     excluded from every total, so defaulting to one silently moves money into or out of a place
+     the user cannot see — "Right now you have" jumps, or a sum quietly disappears, and the sheet
+     showed no account selected at any point. */
+  const liveAcc = id => { const a = id && accById(id); return (a && !a.archived) ? id : null; };
 
   const ACC_IC    = { cash: 'i-wallet', bank: 'i-bank', wallet: 'i-wallet' };
   const ACC_LABEL = { cash: 'Cash', bank: 'Bank', wallet: 'Wallet / UPI' };
@@ -1860,6 +2032,17 @@
 
   const KIND_LABEL = { unclear: 'not decided yet', loan: 'to come back', gift: 'a gift',
                        fund: 'for something', repay: 'paid back', vyavhar: 'vyavhar' };
+
+  /* The chips offered when recording or correcting an entry. One table, because the record
+     sheet and the correct-it sheet disagreeing about what a kind is CALLED is exactly what
+     this app cannot afford — and the rule that `fund` is out-only was previously stated
+     nowhere except by the absence of an array element, twice. KIND_LABEL stays separate: it
+     is a different register, for describing an entry rather than choosing one. */
+  const kindChoices = dir => dir === 'out'
+    ? [['unclear','Not decided'], ['loan','To come back'], ['gift','A gift'],
+       ['fund','For something'], ['repay','Paying them back'], ['vyavhar','Vyavhar']]
+    : [['unclear','Not decided'], ['loan','To go back'], ['gift','A gift'],
+       ['repay','Paid me back'], ['vyavhar','Vyavhar']];
 
   function agoText(ts) {
     const d = Math.floor((Date.now() - Number(ts)) / 86400000);
@@ -1876,12 +2059,17 @@
   function netWords(f) {
     if (f.net > 0) return 'owes you ' + moneyP(f.net);
     if (f.net < 0) return 'you owe ' + moneyP(-f.net);
+    /* A zero net is not the same as nothing outstanding. Owing each other ₹5,000 nets to zero
+       while two real debts are open — and "all settled" there contradicted the very same
+       screen, which was still listing that money under "Still out there". */
+    if (f.theyOwe || f.youOwe) return 'square for now — ' + moneyP(f.theyOwe) + ' open each way';
     if (f.undecidedOut || f.undecidedIn) return 'nothing owed · something undecided';
     return 'all settled';
   }
 
   function accountsSection() {
-    if (!hasAccounts()) return '';
+    // Same guard as familySection: this runs on the Home path, and balanceOf() needs Ledger.
+    if (!hasAccounts() || typeof Ledger === 'undefined') return '';
     const list = liveAccounts();
     const stale = list.filter(a => Date.now() - a.anchorTs > 21 * 86400000);
     return `
@@ -1903,6 +2091,12 @@
   }
 
   function familySection() {
+    /* Guard BEFORE touching Ledger. index.html now loads two scripts, and ledger.js can be
+       missing at runtime — a dropped connection, a half-finished deploy, a service-worker
+       cache older than the file. This is on the Home path, so an exception here left the whole
+       first screen blank with nothing on it to explain why, for every user, including the ones
+       who have never opened Family. Cheap for them anyway: no people, no work. */
+    if (!DB.people.length || typeof Ledger === 'undefined') return '';
     const folks = Ledger.everyone(book());
     if (!folks.length) return '';
     const open = folks.filter(f => f.net !== 0 || f.undecidedOut || f.undecidedIn);
@@ -1970,6 +2164,20 @@
         </div>
       </section>
 
+      ${DB.accounts.some(a => a.archived) ? `<section class="sec rise">
+        <span class="lbl">Put away</span>
+        <div class="list">
+          ${DB.accounts.filter(a => a.archived).map(a => htm`
+            <button class="li li--btn" data-act="unarchive-acc" data-id="${a.id}">
+              ${trusted(icon('i-repeat'))}
+              <span class="li__b"><span class="li__t">${a.name}</span>
+                <span class="li__s">${balanceOf(a.id) !== 0
+                  ? moneySignedP(balanceOf(a.id)) + ' has turned up in here — tap to bring it back'
+                  : 'Tap to bring it back'}</span></span>
+            </button>`).join('')}
+        </div>
+      </section>` : ''}
+
       <section class="sec rise">
         <span class="lbl">Record</span>
         <div class="list">
@@ -2032,6 +2240,18 @@
         <p class="cmp-note" style="margin:10px 2px 0">Oldest first. This is your money sitting with someone else.</p>
       </section>` : ''}
 
+      ${DB.people.some(p => p.archived) ? `<section class="sec rise">
+        <span class="lbl">Put away</span>
+        <div class="list">
+          ${DB.people.filter(p => p.archived).map(p => htm`
+            <button class="li li--btn" data-act="unarchive-person" data-id="${p.id}">
+              ${trusted(icon('i-repeat'))}
+              <span class="li__b"><span class="li__t">${p.name}</span>
+                <span class="li__s">Tap to bring them back</span></span>
+            </button>`).join('')}
+        </div>
+      </section>` : ''}
+
       <section class="sec rise">
         <div class="list">
           <button class="li li--btn" data-act="add-person">${icon('i-plus')}
@@ -2071,6 +2291,9 @@
     if (!el || !viewEl.contains(el) || !el.dataset || !el.dataset.act) return null;
     const d = el.dataset;
     return '[data-act="' + d.act + '"]'
+      // Without data-id every row in a list shares a selector, so re-rendering moves focus
+      // to the first one. Ids are ID_OK ([A-Za-z0-9_-]) so they are safe to concatenate.
+      + (d.id != null && ID_OK.test(d.id) ? '[data-id="' + d.id + '"]' : '')
       + (d.v != null ? '[data-v="' + d.v + '"]' : '')
       + (d.p != null ? '[data-p="' + d.p + '"]' : '')
       + (d.cat != null ? '[data-cat="' + d.cat + '"]' : '');
@@ -2295,7 +2518,7 @@
           note: prefill ? (prefill.note || '') : '', date: dayKey(new Date()), ts: null,
           // Most people spend from the same place most of the time, so the last one used
           // is already selected and the fast path stays amount → category → Save.
-          acc: (DB.lastAcc && accById(DB.lastAcc) && !accById(DB.lastAcc).archived) ? DB.lastAcc : null };
+          acc: liveAcc(DB.lastAcc) };
     S.draft = d;
     const picks = existing ? [] : quickPicks();
 
@@ -2411,27 +2634,47 @@
       catId:  d.catId,
       note:   note,
       ts:     ts,
-      acc:    d.acc !== undefined ? d.acc : (prev ? prev.acc : null),
+      // A companion row must keep BOTH of these. The gate builds a fresh object, so a field
+      // not listed here is dropped — and losing fromLed unlinks the copy from the ledger
+      // entry that owns it, so striking that entry out no longer stops the copy counting and
+      // the same rupees sit in the account and in the categories at once, permanently.
+      // acc stays null on a companion row: the rupees already left via the ledger entry.
+      fromLed: prev ? prev.fromLed : null,
+      acc:    (prev && prev.fromLed) ? null : (d.acc !== undefined ? d.acc : (prev ? prev.acc : null)),
     });
     if (!clean) {
       if (btn) btn.disabled = false;
       return toast('That does not look like a valid expense');
     }
 
+    /* If this row is one half of a pair, its numbers belong to both halves. save-led-edit
+       already mirrors this way; without the same mirror here, editing the expense left the
+       account debited one amount while the categories counted another — one event, two
+       figures, permanently and with nothing on screen to show it. */
+    const owner = (prev && prev.fromLed) ? DB.ledger.filter(l => l.id === prev.fromLed)[0] : null;
+    if (owner && !owner.voided) {
+      owner.paise = Math.round(clean.amount * 100);
+      owner.ts = clean.ts;
+      owner.tsSuspect = false;
+    }
+
     if (prev) DB.expenses[idx] = clean; else DB.expenses.push(clean);
     S.newId = clean.id;
     const wasLast = DB.lastAcc;
-    if (clean.acc) DB.lastAcc = clean.acc;      // so the next expense is pre-picked
+    if (liveAcc(clean.acc)) DB.lastAcc = clean.acc;      // so the next expense is pre-picked
 
     if (!save()) {
       DB.lastAcc = wasLast;
-      // The write never landed. Put it back — a lost expense must not look like a saved one.
-      if (prev) DB.expenses[idx] = prev; else DB.expenses.pop();
-      S.newId = null;
-      if (btn) btn.disabled = false;
+      /* KEEP the expense. Memory-only is a supported, announced mode — the banner says in so
+         many words that "expenses you add will disappear when you close this tab", which means
+         they work until then. Discarding it here refused the app's core action for the whole
+         session in a private window, while theme, budget and delete all still worked, so the
+         app was half-writable with nothing explaining why. The honest answer is to record it
+         and say plainly that it is not being stored. */
+      closeSheet(); render();
       return toast(storageIssue === 'full'
-        ? 'Storage is full — nothing was saved'
-        : 'Could not save — storage is blocked on this device');
+        ? 'Added here, but storage is full — nothing new is being saved'
+        : 'Added here, but this browser is not storing anything — save a backup');
     }
     toast(`${prev ? 'Updated' : 'Added'} <b>${money(clean.amount)}</b> · ${catOf(clean.catId).name}`);
     closeSheet(); render();
@@ -2677,6 +2920,11 @@
     const a = accById(id); if (!a) return;
     const b = balanceOf(id);
     const hist = Ledger.accountHistory(id, book()).slice(0, 30);
+    // Filing an existing expense under a newly made account moves nothing — the starting
+    // figure already had it taken out. That is correct, and completely invisible, so it
+    // reads as a broken app unless it is said out loud.
+    const preAnchor = DB.expenses.filter(e => e.acc === id && e.ts < a.anchorTs).length;
+    const clockOff = !!a.tsSuspect;   // set by the gate when it had to pull an anchor back from the future
     const unex = DB.moves.filter(m => m.kind === 'adjust' && m.acc === id);
     const unexP = unex.reduce((s, m) => s + m.paise, 0);
 
@@ -2695,14 +2943,28 @@
           ${icon('i-check')}Check the balance
         </button>
         ${unex.length ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">Unexplained so far: ${esc(moneySignedP(unexP))} across ${unex.length} ${unex.length === 1 ? 'check' : 'checks'}.</p>` : ''}
+        ${clockOff ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">
+          The date this account was set up with looks wrong. Nothing was lost —
+          <button class="link" data-act="reconcile" data-id="${esc(a.id)}">check the balance</button> once and it's settled.</p>` : ''}
+        ${preAnchor ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">
+          ${preAnchor} older ${preAnchor === 1 ? 'expense is' : 'expenses are'} filed under this account from before you set it up. They stay in your history and your categories, but they don't move this balance — the figure you started with already had them taken out.</p>` : ''}
 
         <span class="lbl">Since you last checked</span>
-        ${hist.length ? `<div class="list">${hist.map(h => `
-          <div class="li">
+        ${hist.length ? `<p class="cmp-note" style="margin:0 2px 8px">Corrections and struck-out rows are listed too, so they don't add up to the figure above — they are here to explain it.</p>
+        <div class="list">${hist.map(h => {
+          // A wrong ATM entry has to be fixable. Corrections are left alone: they exist as the
+          // paper trail for an anchor that already moved, so removing one would rewrite history.
+          // Opening, never deleting. A row you tap to read must not be a row that removes
+          // money on one tap — the undo lives in a toast that is gone in six seconds.
+          const act = h.type === 'ledger' ? `data-act="open-led" data-id="${esc(h.ref.id)}"`
+                    : (h.type === 'move' && h.ref.kind !== 'adjust') ? `data-act="open-move" data-id="${esc(h.ref.id)}"`
+                    : '';
+          const tag = act ? 'button' : 'div';
+          return `<${tag} class="li ${act ? 'li--btn' : ''} ${h.ref.voided ? 'is-struck' : ''}" ${act}>
             <span class="li__b"><span class="li__t">${esc(h.note || histLabel(h))}</span>
               <span class="li__s">${esc(fullDate(new Date(h.ts)))} · ${esc(histLabel(h))}</span></span>
             <span class="item__v ${h.paise < 0 ? '' : 'is-pos'}">${esc((h.paise > 0 ? '+' : '') + moneySignedP(h.paise))}</span>
-          </div>`).join('')}</div>`
+          </${tag}>`; }).join('')}</div>`
         : `<p class="cmp-note" style="margin:0 2px">Nothing has moved since then.</p>`}
 
         <span class="lbl">This account</span>
@@ -2712,9 +2974,13 @@
           <button class="li li--btn" data-act="money-out" data-id="${esc(a.id)}">${icon('i-up')}
             <span class="li__b"><span class="li__t">Money left, but wasn't spending</span>
               <span class="li__s">Cash lost, sent somewhere Hisaab doesn't track</span></span></button>
+          <button class="li li--btn" data-act="rename-acc" data-id="${esc(a.id)}">${icon('i-pencil')}
+            <span class="li__b"><span class="li__t">Rename it</span></span></button>
           <button class="li li--btn li--danger" data-act="archive-acc" data-id="${esc(a.id)}">${icon('i-trash')}
             <span class="li__b"><span class="li__t">Put this account away</span>
-              <span class="li__s">It stops appearing, and nothing you recorded is lost</span></span></button>
+              <span class="li__s">${balanceOf(a.id) !== 0
+                ? 'Empty it first — there is still money in here'
+                : 'It stops appearing, and nothing you recorded is lost'}</span></span></button>
         </div>
         <div style="height:20px"></div>
       </div>`);
@@ -2764,7 +3030,7 @@
   function openMoney(kind, accId) {
     const list = liveAccounts();
     if (!list.length) return toast('Add an account first');
-    S.pick = { acc: accId || DB.lastAcc || list[0].id, to: null, kind: kind };
+    S.pick = { acc: liveAcc(accId) || liveAcc(DB.lastAcc) || list[0].id, to: null, kind: kind };
     const title = kind === 'in' ? 'Money came in' : kind === 'out' ? 'Money left' : 'Move between accounts';
     openSheet('money', `
       <div class="sheet__head"><h2 class="sheet__title">${esc(title)}</h2>
@@ -2804,8 +3070,25 @@
     const p = personById(id); if (!p) return;
     const st = Ledger.withPerson(id, book());
     const su = Ledger.settleUp(id, book());
-    const rows = DB.ledger.filter(l => l.person === id && !l.voided)
-      .sort((a, b) => b.ts - a.ts).slice(0, 40);
+    // Struck-out entries stay listed. A bahi crosses a line out; it doesn't tear the page —
+    // and "why did this number change?" has to stay answerable after a correction.
+    const asc = DB.ledger.filter(l => l.person === id).sort((a, b) => a.ts - b.ts);
+    /* Where things stood after each entry. Replaying the real function over each prefix is
+       O(n²), but n is a family's entries with one person, and it means the running figure
+       can never drift from the headline the way a hand-rolled fold would. */
+    const after = {};
+    /* Capped, because withPerson() itself scans the list and remaining() scans it again —
+       replaying it per prefix is cubic. Forty entries is nothing; six hundred would lock the
+       phone up while opening a sheet. Past the cap the running line is simply not shown,
+       which is honest; a figure that freezes the app is not. */
+    if (asc.length <= 60) {
+      asc.forEach((l, i) => {
+        const upto = { ledger: asc.slice(0, i + 1), people: DB.people };
+        const s = Ledger.withPerson(id, upto);
+        after[l.id] = { net: s.net, undec: s.undecidedOut + s.undecidedIn };
+      });
+    }
+    const rows = asc.slice().reverse().slice(0, 40);
 
     openSheet('person', `
       <div class="sheet__head"><h2 class="sheet__title">${esc(p.name)}</h2>
@@ -2813,7 +3096,7 @@
       <div class="sheet__body">
         <div class="detail" style="padding-bottom:6px">
           <span class="cat-ic cat-ic--lg" style="${cvars('gift')}">${icon('i-people')}</span>
-          <div class="detail__v money">${esc(moneyP(Math.abs(st.net)))}</div>
+          <div class="detail__v money ${st.net > 0 ? 'is-owed-you' : st.net < 0 ? 'is-owed-them' : ''}">${esc(moneyP(Math.abs(st.net)))}</div>
           <div class="detail__t">${st.net > 0 ? esc(p.name) + ' owes you' : st.net < 0 ? 'You owe ' + esc(p.name) : 'Nothing owed either way'}</div>
           ${(st.undecidedOut || st.undecidedIn) ? `<div class="detail__s">and ${esc(moneyP(st.undecidedOut + st.undecidedIn))} not decided yet</div>` : ''}
         </div>
@@ -2827,24 +3110,170 @@
           <button class="btn btn--block" data-act="lend" data-id="${esc(id)}" data-v="in">${icon('i-down')}I got</button>
         </div>
 
-        <span class="lbl">Everything between you</span>
+        <div class="list" style="margin-top:16px">
+          <button class="li li--btn" data-act="rename-person" data-id="${esc(id)}">${icon('i-pencil')}
+            <span class="li__b"><span class="li__t">Rename</span></span></button>
+          <button class="li li--btn li--danger" data-act="archive-person" data-id="${esc(id)}">${icon('i-trash')}
+            <span class="li__b"><span class="li__t">Put ${esc(p.name)} away</span>
+              <span class="li__s">${openWith(id)
+                ? 'Settle up first — there is still something between you'
+                : 'They stop appearing, and nothing you recorded is lost'}</span></span></button>
+        </div>
+
+        <span class="lbl">${asc.length > 40 ? `The last 40 of ${asc.length}` : 'Everything between you'}</span>
         ${rows.length ? `<div class="list">${rows.map(l => `
-          <div class="li">
+          <button class="li li--btn ${l.voided ? 'is-struck' : ''}" data-act="open-led" data-id="${esc(l.id)}">
             <span class="li__b"><span class="li__t">${esc(l.note || (l.dir === 'out' ? 'You gave' : 'You got'))}</span>
-              <span class="li__s">${esc(fullDate(new Date(l.ts)))} · ${esc(KIND_LABEL[l.kind] || '')}${l.ref ? ' · ' + esc(l.ref) : ''}${l.tsSuspect ? ' · date looks wrong' : ''}</span></span>
+              <span class="li__s">${esc(fullDate(new Date(l.ts)))} · ${esc(KIND_LABEL[l.kind] || '')}${l.ref ? ' · ' + esc(l.ref) : ''}${l.tsSuspect ? ' · date looks wrong' : ''}${l.voided ? ' · struck out' : ''}
+                ${!l.voided && after[l.id] ? `<br>${
+                  after[l.id].net === 0
+                    ? (after[l.id].undec
+                        ? 'nothing owed after this · ' + esc(moneyP(after[l.id].undec)) + ' still undecided'
+                        : 'nothing owed after this')
+                    : (after[l.id].net > 0
+                        ? esc(moneyP(after[l.id].net)) + ' owed to you after this'
+                        : 'you owed ' + esc(moneyP(-after[l.id].net)) + ' after this')
+                      + (after[l.id].undec ? ' · ' + esc(moneyP(after[l.id].undec)) + ' undecided' : '')
+                }` : ''}</span></span>
             <span class="item__v">${esc((l.dir === 'out' ? '−' : '+') + moneyP(l.paise))}</span>
-          </div>`).join('')}</div>`
+          </button>`).join('')}</div>`
         : `<p class="cmp-note" style="margin:0 2px">Nothing recorded yet.</p>`}
         <div style="height:20px"></div>
       </div>`);
   }
 
+  /**
+   * One ledger entry, and the two ways to correct it.
+   *
+   * The app was add-only until now, which meant a mistyped ₹50,000 loan to your brother was
+   * permanent — and it poisons the net, "still out there", the account balance and settle-up
+   * at once. Correcting is framed as *striking out*, not deleting: the row stays legible so
+   * "why did this change?" is still answerable by either person later.
+   */
+  function openLedgerEntry(id) {
+    const l = DB.ledger.filter(x => x.id === id)[0]; if (!l) return;
+    const p = personById(l.person);
+    const paidBack = Ledger.settledAgainst(l.id, book());
+    const open = Ledger.remaining(l, book());
+    const acc = l.acc ? accById(l.acc) : null;
+
+    openSheet('leddet', `
+      <div class="sheet__head"><h2 class="sheet__title">${l.dir === 'out' ? 'You gave' : 'You got'}${p ? ' · ' + esc(p.name) : ''}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <div class="detail" style="padding-bottom:6px">
+          <span class="cat-ic cat-ic--lg" style="${cvars('gift')}">${icon(l.dir === 'out' ? 'i-up' : 'i-down')}</span>
+          <div class="detail__v money ${l.voided ? 'is-struck' : ''}">${moneyHTML(l.paise / 100)}</div>
+          <div class="detail__t">${esc(l.note || KIND_LABEL[l.kind] || '')}</div>
+          <div class="detail__s">${esc(fullDate(new Date(l.ts)))} · ${esc(KIND_LABEL[l.kind] || '')}${acc ? ' · ' + esc(acc.name) : ''}</div>
+        </div>
+
+        ${l.voided ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">Struck out. It stays in the book and counts for nothing.</p>` : ''}
+        ${(!l.voided && paidBack > 0) ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">
+          ${esc(moneyP(paidBack))} of this has come back${open > 0 ? ` · ${esc(moneyP(open))} still open` : ' · fully settled'}.</p>` : ''}
+        ${l.tsSuspect ? `<p class="cmp-note" style="margin:12px 2px 0;text-align:center">
+          The date on this one looks wrong.${l.voided
+            ? ' Put it back first if you want to fix it.'
+            : ` <button class="link" data-act="fix-led-date" data-id="${esc(l.id)}">Fix it</button>`}</p>` : ''}
+
+        <span class="lbl">Correct it</span>
+        <div class="list">
+          ${l.voided
+            ? `<button class="li li--btn" data-act="unvoid-led" data-id="${esc(l.id)}">${icon('i-repeat')}
+                 <span class="li__b"><span class="li__t">Put it back</span></span></button>`
+            : `<button class="li li--btn" data-act="edit-led" data-id="${esc(l.id)}">${icon('i-pencil')}
+                 <span class="li__b"><span class="li__t">Change the amount or the note</span></span></button>
+               <button class="li li--btn li--danger" data-act="void-led" data-id="${esc(l.id)}">${icon('i-trash')}
+                 <span class="li__b"><span class="li__t">Strike it out</span>
+                   <span class="li__s">${paidBack > 0
+                     ? 'Something has been paid back against this — undo that first'
+                     : 'It stops counting, but stays in the book'}</span></span></button>`}
+        </div>
+        <div style="height:20px"></div>
+      </div>`);
+  }
+
+  /** One money move — money in, money out, or a transfer between your own accounts. */
+  function openMoveEntry(id) {
+    const m = DB.moves.filter(x => x.id === id)[0]; if (!m) return;
+    const from = m.acc ? accById(m.acc) : null, to = m.toAcc ? accById(m.toAcc) : null;
+    const label = { in: 'Money came in', out: 'Money left', xfer: 'Moved between accounts' }[m.kind] || 'Moved';
+    openSheet('movedet', `
+      <div class="sheet__head"><h2 class="sheet__title">${esc(label)}</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <div class="detail" style="padding-bottom:6px">
+          <span class="cat-ic cat-ic--lg" style="${cvars('bills')}">${icon(m.kind === 'xfer' ? 'i-swap' : m.kind === 'in' ? 'i-down' : 'i-up')}</span>
+          <div class="detail__v money">${moneyHTML(m.paise / 100)}</div>
+          <div class="detail__t">${esc(m.note || label)}</div>
+          <div class="detail__s">${esc(fullDate(new Date(m.ts)))}${m.kind === 'xfer' && from && to
+            ? ' · ' + esc(from.name) + ' → ' + esc(to.name)
+            : from ? ' · ' + esc(from.name) : ''}</div>
+        </div>
+        <span class="lbl">Correct it</span>
+        <div class="list">
+          <button class="li li--btn li--danger" data-act="del-move" data-id="${esc(m.id)}">${icon('i-trash')}
+            <span class="li__b"><span class="li__t">Remove this</span>
+              <span class="li__s">The balance goes back to what it was</span></span></button>
+        </div>
+        <div style="height:20px"></div>
+      </div>`);
+  }
+
+  /** Renaming an account or a person. Names are display only — ids are what records point at. */
+  function openRename(what, id) {
+    const it = what === 'acc' ? accById(id) : personById(id);
+    if (!it) return;
+    S.pick = { rename: what, id: id };
+    openSheet('rename', `
+      <div class="sheet__head"><h2 class="sheet__title">Rename</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        <span class="lbl">Name</span>
+        <div class="metarow"><input class="noteinput" id="rName" type="text" maxlength="24"
+          value="${esc(it.name)}" autocomplete="off" aria-label="Name"></div>
+        <p class="cmp-note" style="margin:12px 2px 20px">Only the name changes. Everything you already recorded stays attached to it.</p>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-rename">${icon('i-check')}Save</button>
+      </div>`);
+  }
+
+  function openLedgerEdit(id) {
+    const l = DB.ledger.filter(x => x.id === id)[0]; if (!l) return;
+    const paidBack = Ledger.settledAgainst(l.id, book());
+    S.pick = { edit: l.id, lkind: l.kind, acc: l.acc || null, dir: l.dir, person: l.person };
+    const kinds = kindChoices(l.dir);
+
+    openSheet('lededit', `
+      <div class="sheet__head"><h2 class="sheet__title">Change this entry</h2>
+        <button class="iconbtn" data-act="close" aria-label="Close">${icon('i-close')}</button></div>
+      <div class="sheet__body">
+        ${amountField('eAmt', 'How much', (l.paise / 100).toFixed(2).replace(/\.00$/, ''))}
+        ${paidBack > 0 ? `<p class="cmp-note" style="margin:8px 2px 0">${esc(moneyP(paidBack))} has already come back against this, so it can't go below that.</p>` : ''}
+        <span class="lbl">What was it for</span>
+        <div class="metarow"><input class="noteinput" id="eNote" type="text" maxlength="60"
+          value="${esc(l.note || '')}" autocomplete="off" aria-label="What it was for"></div>
+        <span class="lbl">Is it coming back?</span>
+        <div class="chips" role="group" aria-label="Kind">
+          ${kinds.map(([k, lab]) => `<button type="button" class="chip" data-act="pick-lkind" data-v="${k}"
+            aria-pressed="${k === l.kind}">${esc(lab)}</button>`).join('')}
+        </div>
+        <span class="lbl">When</span>
+        <div class="metarow"><input class="noteinput" id="eDate" type="date" aria-label="Date"
+          value="${esc(dayKey(l.ts))}" max="${esc(dayKey(new Date()))}" style="max-width:190px"></div>
+        ${liveAccounts().length ? `<span class="lbl">${l.dir === 'out' ? 'Out of' : 'Into'}</span>${accChips('pick-acc', l.acc || null, "Didn't touch an account")}` : ''}
+        <div style="height:18px"></div>
+      </div>
+      <div class="sheet__foot">
+        <button class="btn btn--primary btn--lg btn--block" data-act="save-led-edit">${icon('i-check')}Save changes</button>
+      </div>`);
+  }
+
   function openLend(personId, dir) {
     const p = personById(personId); if (!p) return;
-    S.pick = { person: personId, dir: dir, lkind: 'unclear', acc: DB.lastAcc || null };
-    const kinds = dir === 'out'
-      ? [['unclear', 'Not decided'], ['loan', 'To come back'], ['gift', 'A gift'], ['fund', 'For something'], ['repay', 'Paying them back'], ['vyavhar', 'Vyavhar']]
-      : [['unclear', 'Not decided'], ['loan', 'To go back'], ['gift', 'A gift'], ['repay', 'Paid me back'], ['vyavhar', 'Vyavhar']];
+    S.pick = { person: personId, dir: dir, lkind: 'unclear', acc: liveAcc(DB.lastAcc) };
+    const kinds = kindChoices(dir);
 
     openSheet('lend', `
       <div class="sheet__head"><h2 class="sheet__title">${dir === 'out' ? 'You gave ' : 'You got from '}${esc(p.name)}</h2>
@@ -2860,6 +3289,18 @@
             aria-pressed="${k === 'unclear'}">${esc(l)}</button>`).join('')}
         </div>
         <p class="cmp-note" style="margin:8px 2px 0">You don't have to decide now — "Not decided" is a real answer, and it stays out of who-owes-what until you say otherwise.</p>
+
+        ${dir === 'out' ? `<span class="lbl">Was it really your spending? <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-3)">— only for "For something"</span></span>
+        <div class="metarow" style="align-items:flex-start;gap:10px">
+          <input type="checkbox" id="lMine" style="width:20px;height:20px;flex:none;margin-top:2px">
+          <label for="lMine" style="font-size:.9rem;line-height:1.4">Also count it as <b>my</b> spending
+            <span style="display:block;color:var(--ink-3);font-size:.82rem;margin-top:2px">For "I'll give you the money, you pay for it" — the shop was paid, so it belongs in your categories.</span></label>
+        </div>
+        <div class="chips" role="group" aria-label="Category">
+          ${CATS.map(c => `<button type="button" class="chip" data-act="pick-lcat" data-v="${c.id}"
+            aria-pressed="false" style="${cvars(c.id)}">${icon(c.icon)}${esc(c.short)}</button>`).join('')}
+        </div>` : ''}
+
         ${liveAccounts().length ? `<span class="lbl">${dir === 'out' ? 'Out of' : 'Into'}</span>${accChips('pick-acc', S.pick.acc, "Didn't touch an account")}` : ''}
         <div style="height:18px"></div>
       </div>
@@ -2891,10 +3332,22 @@
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 400);
   }
   function exportCSV() {
-    const rows = [['Date','Time','Category','Note','Amount (INR)']];
+    /* Only widen the file for someone who has accounts. A user who never made one had their
+       spreadsheet go from five columns to six, with the new one blank on every row — and any
+       pivot or template keyed to the old layout started reading Note where Amount used to be. */
+    const withAcc = DB.accounts.length > 0;
+    const rows = [withAcc
+      ? ['Date','Time','Category','Note','Account','Amount (INR)']
+      : ['Date','Time','Category','Note','Amount (INR)']];
     sorted().forEach(e => {
       const d = new Date(e.ts);
-      rows.push([dayKey(d), fmtTime(e.ts), catOf(e.catId).name, (e.note||''), e.amount]);
+      const acc = e.acc ? accById(e.acc) : null;
+      // The account name is user-typed, so it goes through cell() like every other field —
+      // an account called "=HYPERLINK(...)" must not become a live formula for whoever
+      // opens the file.
+      rows.push(withAcc
+        ? [dayKey(d), fmtTime(e.ts), catOf(e.catId).name, (e.note||''), acc ? acc.name : '', e.amount]
+        : [dayKey(d), fmtTime(e.ts), catOf(e.catId).name, (e.note||''), e.amount]);
     });
     // A note that starts with = + - or @ is run as a formula by Excel and Sheets.
     // Prefix it so an exported file can never attack whoever opens it.
@@ -2906,8 +3359,15 @@
     const csv = rows.map(r => r.map(cell).join(',')).join('\n');
     // BOM so Excel opens the ₹ amounts and notes as UTF-8
     download('hisaab-' + dayKey(new Date()) + '.csv', '\ufeff' + csv, 'text/csv;charset=utf-8');
-    markBackedUp();
-    toast('CSV downloaded');
+    /* Deliberately NOT markBackedUp(). A CSV is a spreadsheet of expenses \u2014 it carries no
+       accounts, no people and no ledger, and it cannot be restored from. Marking the data
+       backed up here silences the reminder for ninety days on the strength of a file that
+       would lose every rupee of the family ledger. */
+    // Accounts and moves are missing from a CSV just as surely as the ledger is, so the
+    // warning has to key on all of them, not only on whether anyone has been lent money yet.
+    toast((DB.ledger.length || DB.accounts.length || DB.people.length || DB.moves.length)
+      ? 'Spreadsheet downloaded \u2014 this is not a backup, your accounts and family entries are not in it'
+      : 'Spreadsheet downloaded');
   }
 
   function markBackedUp() {
@@ -2957,7 +3417,10 @@
       if (!clean.length && !inLed.length && !inAcc.length) return toast('Nothing usable in that file');
       const skipped = rows.length - clean.length;
       const budget = data && isFinite(Number(data.budget)) ? Number(data.budget) : null;
-      const have = new Set(all().map(e => e.id));
+      // DB.expenses, not all(): this counts what is STORED, and all() hides companion rows.
+      // applyImport dedupes against DB.expenses, so a filtered count here made the preview
+      // promise a number the action could not deliver.
+      const have = new Set(DB.expenses.map(e => e.id));
       const fresh = clean.filter(e => !have.has(e.id)).length;
 
       openSheet('import', `
@@ -2979,7 +3442,18 @@
               inLed.length ? `${inLed.length} family ${inLed.length===1?'entry':'entries'}` : '',
             ].filter(Boolean).join(' · ')}</p>` : ''}
           <button class="btn btn--primary btn--block btn--lg" style="margin-top:8px" data-act="import-merge">
-            ${icon('i-plus')}Add the ${fresh} new ${fresh===1?'one':'ones'}
+            ${icon('i-plus')}${(() => {
+              /* Counting expenses alone made a backup that is mostly family entries offer
+                 "Add the 0 new ones", which reads as an empty or broken file. Count
+                 everything the merge would actually bring in. */
+              const haveA = new Set(DB.accounts.map(x => x.id)), haveP = new Set(DB.people.map(x => x.id));
+              const haveM = new Set(DB.moves.map(x => x.id)), haveL = new Set(DB.ledger.map(x => x.id));
+              const extra = inAcc.filter(x => !haveA.has(x.id)).length + inPpl.filter(x => !haveP.has(x.id)).length
+                          + inMov.filter(x => !haveM.has(x.id)).length + inLed.filter(x => !haveL.has(x.id)).length;
+              const total = fresh + extra;
+              if (!total) return 'Nothing new in this file';
+              return `Add the ${total} new ${total === 1 ? 'one' : 'ones'}`;
+            })()}
           </button>
           <p class="cmp-note" style="margin:8px 2px 0;text-align:center">Keeps everything you have now.</p>
           <button class="btn btn--danger btn--block" style="margin-top:16px" data-act="import-replace">
@@ -3017,15 +3491,26 @@
       DB.moves    = p.moves.slice();    DB.ledger = p.ledger.slice();
       DB.sample = false; DB.dismissed = true;
     } else {
-      const have = new Set(all().map(e => e.id));
-      DB.expenses = all().concat(p.list.filter(e => !have.has(e.id)));
+      /* DB.expenses, not all(): all() hides the copies belonging to struck-out ledger
+         entries, so writing it back would delete them for good. Reading is filtered;
+         writing is never. */
+      const have = new Set(DB.expenses.map(e => e.id));
+      DB.expenses = DB.expenses.concat(p.list.filter(e => !have.has(e.id)));
       DB.accounts = mergeById(DB.accounts, p.accounts);
       DB.people   = mergeById(DB.people,   p.people);
       DB.moves    = mergeById(DB.moves,    p.moves);
       DB.ledger   = mergeById(DB.ledger,   p.ledger);
     }
     if (p.budget !== null && p.budget >= 0) DB.budget = Math.round(p.budget);
-    if (p.notRecurring) DB.notRecurring = p.notRecurring;
+    /* Merge means merge. `[]` is truthy, so this used to overwrite unconditionally — and a
+       backup taken before the user marked things "not a regular bill" silently rolled every
+       one of those decisions back, on a sheet whose own words are "Keeps everything you have
+       now." Replace still replaces; merge takes the union. */
+    if (p.notRecurring) {
+      DB.notRecurring = (mode === 'replace')
+        ? p.notRecurring.slice()
+        : Array.from(new Set(DB.notRecurring.concat(p.notRecurring)));
+    }
     S.pendingImport = null;
     /* References have to be re-checked, not assumed: a merged expense can point at an
        account this file didn't carry, and a settlement at an entry that isn't here. */
@@ -3045,7 +3530,9 @@
       version: 2,
       exported: new Date().toISOString(),
       budget: DB.budget,
-      expenses: sorted(),
+      // DB.expenses, not sorted(): sorted() is built on all(), which hides the copies
+      // belonging to struck-out entries. A backup that quietly omits rows is not a backup.
+      expenses: DB.expenses.slice().sort((a, b) => b.ts - a.ts),
       /* v1 wrote only budget + expenses, so a restore quietly lost every preference.
          The ledger must never join that list — it is the one thing in here that cannot
          be reconstructed from memory once it is gone. */
@@ -3128,12 +3615,30 @@
         const idx = DB.expenses.findIndex(x => x.id === id);
         if (idx < 0) break;
         S.lastDeleted = DB.expenses[idx];
-        DB.expenses.splice(idx, 1); save(); closeSheet(); render(true);
+        DB.expenses.splice(idx, 1);
+        /* If this was the "counted as my spending" copy, the fund it discharged is no longer
+           discharged — the app's own rule is that the funder had the value because they
+           recorded it as their spending. Delete that record and they did not, so the debt
+           comes back. Otherwise the rupees are neither spending nor owed by anyone. */
+        S.lastFulfilled = null;
+        if (S.lastDeleted.fromLed) {
+          const owner = DB.ledger.filter(l => l.id === S.lastDeleted.fromLed)[0];
+          if (owner && owner.fulfilled) { owner.fulfilled = false; S.lastFulfilled = owner.id; }
+        }
+        save(); closeSheet(); render(true);
         toast(`Deleted <b>${money(S.lastDeleted.amount)}</b>`, { act: 'undo', label: 'Undo' });
         break;
       }
       case 'undo':
-        if (S.lastDeleted) { DB.expenses.push(S.lastDeleted); S.newId = S.lastDeleted.id; S.lastDeleted = null; save(); render(true); }
+        if (S.lastDeleted) {
+          DB.expenses.push(S.lastDeleted); S.newId = S.lastDeleted.id;
+          if (S.lastFulfilled) {                     // put the discharge back with the record
+            const owner = DB.ledger.filter(l => l.id === S.lastFulfilled)[0];
+            if (owner) owner.fulfilled = true;
+            S.lastFulfilled = null;
+          }
+          S.lastDeleted = null; save(); render(true);
+        }
         hideToast();
         break;
 
@@ -3180,6 +3685,15 @@
       case 'import-merge': applyImport('merge'); break;
       case 'import-replace': applyImport('replace'); break;
       case 'load-sample':
+        // Same rule as "Start fresh": loading a demo must not quietly delete a real ledger.
+        if (DB.ledger.length || DB.accounts.length || DB.people.length) {
+          if (!S.confirmSample) {
+            S.confirmSample = true;
+            setTimeout(() => { S.confirmSample = false; }, 4000);
+            return toast(`This will erase ${DB.accounts.length} ${DB.accounts.length === 1 ? 'account' : 'accounts'}, ${DB.people.length} ${DB.people.length === 1 ? 'person' : 'people'} and ${DB.ledger.length} family ${DB.ledger.length === 1 ? 'entry' : 'entries'} — tap again to confirm`);
+          }
+          S.confirmSample = false;
+        }
         DB.expenses = sampleData(); wipeLedger(); DB.sample = true; DB.dismissed = false; save();
         // go('home') would no-op when we're already on home, so render directly
         S.confirmErase = false; S.view = 'home'; S.filterCat = null; S.query = '';
@@ -3189,9 +3703,23 @@
         if (!S.confirmErase) { S.confirmErase = true; render(true); setTimeout(() => { S.confirmErase = false; if (S.view==='settings') render(true); }, 4000); }
         else { DB.expenses = []; wipeLedger(); DB.sample = false; DB.dismissed = true; S.confirmErase = false; save(); render(true); toast('Everything erased'); }
         break;
-      case 'fresh':
-        DB.expenses = []; wipeLedger(); DB.sample = false; DB.dismissed = true; save(); render(); toast('Ready for your first expense');
+      case 'fresh': {
+        /* "Start fresh" means "clear the sample data" — it sits on a banner about sample
+           expenses. It must not silently take a real family ledger with it, and the ledger
+           is the one thing here that cannot be reconstructed from memory. If anything real
+           exists, clear only the sample expenses and say what was kept. */
+        const real = DB.accounts.length + DB.people.length + DB.ledger.length + DB.moves.length;
+        DB.expenses = [];
+        if (!real) wipeLedger();
+        // The companions went with the expenses, so the funds they discharged are owed again.
+        reconcileFulfilled();
+        DB.sample = false; DB.dismissed = true;
+        save(); render();
+        toast(real
+          ? 'Sample expenses cleared — your accounts and family entries were kept'
+          : 'Ready for your first expense');
         break;
+      }
       case 'dismiss': DB.dismissed = true; save(); render(true); break;
       case 'ack-recovery': DB.recoveryAck = true; save(); render(true); break;
       case 'snooze-nudge':
@@ -3202,11 +3730,21 @@
       /* ---- accounts & family ----
          Every writer here checks save(). A ledger entry that never reached disk while
          the app said "Saved" is the one bug this whole feature exists to avoid. */
-      case 'pick-kind': case 'pick-acc': case 'pick-to': case 'pick-lkind': {
+      case 'pick-kind': case 'pick-acc': case 'pick-to': case 'pick-lkind': case 'pick-lcat': {
         const grp = t.closest('.chips');
         if (grp) $$('.chip', grp).forEach(c => c.setAttribute('aria-pressed', String(c === t)));
         S.pick = S.pick || {};
-        S.pick[{ 'pick-kind': 'kind', 'pick-acc': 'acc', 'pick-to': 'to', 'pick-lkind': 'lkind' }[a]] = t.dataset.v || null;
+        S.pick[{ 'pick-kind': 'kind', 'pick-acc': 'acc', 'pick-to': 'to',
+                 'pick-lkind': 'lkind', 'pick-lcat': 'lcat' }[a]] = t.dataset.v || null;
+        // Picking a category means you want it counted — but only "For something" can be
+        // counted, because only a fund is discharged by being spent.
+        if (a === 'pick-lcat' && $('#lMine')) {
+          $('#lMine').checked = true;
+          if ((S.pick.lkind || 'unclear') !== 'fund') {
+            const chip = $('[data-act="pick-lkind"][data-v="fund"]');
+            if (chip) chip.click();
+          }
+        }
         break;
       }
 
@@ -3227,15 +3765,29 @@
         const acc = normaliseAccount({ name: name, kind: (S.pick && S.pick.kind) || 'cash',
           anchorPaise: paise, anchorTs: Date.now(), ts: Date.now() });
         if (!acc) return toast('That doesn’t look right');
-        DB.accounts.push(acc);
+        DB.accounts.push(acc); noLongerSample();
         const hadLast = DB.lastAcc;
         if (!hadLast) DB.lastAcc = acc.id;
-        if (!save()) { DB.accounts.pop(); DB.lastAcc = hadLast; return toast('Could not save — storage is full or blocked'); }
+        const ok = save();
+        if (!ok) { closeSheet(); render(); return toast(unsavedNote()); }
         closeSheet(); render(); toast(`${esc(acc.name)} added`);
         break;
       }
       case 'archive-acc': {
         const acc = accById(t.dataset.id); if (!acc) return;
+        /* Archiving drops the account out of liveAccounts(), and every total is built from
+           that list — so putting away an account with money in it removes that money from
+           the app with no row anywhere saying where it went, while the toast cheerfully
+           says nothing was deleted. The invariant worth holding: the sum of all balances
+           only ever changes because of a record you can point at. */
+        const left = balanceOf(acc.id);
+        if (left !== 0) {
+          // Telling someone with an overdrawn account to "move the money out" is advice that
+          // makes it worse. The fix for a negative balance is to account for what is missing.
+          return toast(left < 0
+            ? `${esc(acc.name)} is <b>${esc(moneySignedP(left))}</b> — check the balance first, so nothing goes missing with it`
+            : `${esc(acc.name)} still has <b>${esc(moneySignedP(left))}</b> in it — move that out first`);
+        }
         const wasLast = DB.lastAcc;
         acc.archived = true;
         if (DB.lastAcc === acc.id) DB.lastAcc = '';
@@ -3251,18 +3803,30 @@
         const actual = readPaise('reconAmt', true);
         if (actual == null) return toast('Type what is actually there');
         const diff = actual - pk.expected;
-        const wasP = acc.anchorPaise, wasT = acc.anchorTs;
+        const wasP = acc.anchorPaise, wasT = acc.anchorTs, wasSus = acc.tsSuspect;
+        const at = Date.now();          // ONE clock read: two land in the same millisecond
         let added = null;
         if (diff !== 0) {
-          added = normaliseMove({ kind: 'adjust', paise: diff, acc: acc.id, ts: Date.now(),
+          /* The adjust row is documentary — the new anchor ALREADY contains the correction.
+             So it must be dated strictly before the anchor: balance() counts everything at or
+             after anchorTs (`ts < from` is the skip), so an adjust sharing the anchor's
+             millisecond gets applied a second time and the balance is wrong by exactly the
+             gap. Intermittent, which is worse than always. */
+          added = normaliseMove({ kind: 'adjust', paise: diff, acc: acc.id, ts: at - 1,
             note: diff < 0 ? 'Less than expected' : 'More than expected' });
-          if (added) DB.moves.push(added);
+          /* The correction row IS the answer to "where did that go". If the gate refuses it —
+             a difference past the ₹100 crore ceiling — then moving the anchor anyway would
+             take the money out with no record of it at all, while the toast confidently
+             announced the figure. Refuse the whole check instead. */
+          if (!added) return toast('That difference is too large to record — check the account’s starting figure');
+          DB.moves.push(added);
         }
         // The anchor moves even when it matched: a shorter gap between checks is less
         // room for the next drift to hide in.
-        acc.anchorPaise = actual; acc.anchorTs = Date.now();
+        acc.anchorPaise = actual; acc.anchorTs = at;
+        acc.tsSuspect = false;     // a human has just re-established this figure and its date
         if (!save()) {
-          acc.anchorPaise = wasP; acc.anchorTs = wasT;
+          acc.anchorPaise = wasP; acc.anchorTs = wasT; acc.tsSuspect = wasSus;
           if (added) DB.moves.pop();
           return toast('Could not save — storage is full or blocked');
         }
@@ -3283,8 +3847,9 @@
         const mv = normaliseMove({ kind: pk.kind, paise: paise, acc: pk.acc, toAcc: pk.to,
           note: readText('mNote', 60), ts: Date.now() });
         if (!mv) return toast('That doesn’t look right');
-        DB.moves.push(mv);
-        if (!save()) { DB.moves.pop(); return toast('Could not save — storage is full or blocked'); }
+        DB.moves.push(mv); noLongerSample();
+        const okM = save();
+        if (!okM) { closeSheet(); render(); return toast(unsavedNote()); }
         closeSheet(); render(); toast(`Saved · ${esc(moneyP(paise))}`);
         break;
       }
@@ -3297,27 +3862,319 @@
         if (NAME_BAD.test(name)) return toast('A name can’t contain &lt; or &gt;');
         const per = normalisePerson({ name: name, ts: Date.now() });
         if (!per) return toast('That doesn’t look right');
-        DB.people.push(per);
-        if (!save()) { DB.people.pop(); return toast('Could not save'); }
+        DB.people.push(per); noLongerSample();
+        const okP = save();
+        if (!okP) { closeSheet(); render(); return toast(unsavedNote()); }
         closeSheet(); render(); toast(`${esc(per.name)} added`);
         break;
       }
+
+      case 'open-move': openMoveEntry(t.dataset.id); break;
+      case 'del-move': {
+        const idx = DB.moves.findIndex(m => m.id === t.dataset.id);
+        // Removed in another tab, or already removed here — say so rather than doing nothing
+        // and leaving the sheet sitting open as if the tap missed.
+        if (idx < 0) { closeSheet(); render(true); return toast('That one is already gone'); }
+        const gone = DB.moves[idx];
+        DB.moves.splice(idx, 1);
+        if (!save()) { DB.moves.splice(idx, 0, gone); return toast('Could not save'); }
+        S.lastMove = gone;
+        closeSheet(); render(true);
+        toast(`Removed <b>${esc(moneyP(gone.paise))}</b>`, { act: 'undo-move', label: 'Undo' });
+        break;
+      }
+      case 'undo-move':
+        if (S.lastMove) {
+          DB.moves.push(S.lastMove);
+          if (!save()) { DB.moves.pop(); return toast('Could not save — it is still removed'); }
+          S.lastMove = null; render(true);
+        }
+        hideToast();
+        break;
+
+      case 'rename-acc':    openRename('acc', t.dataset.id); break;
+      case 'rename-person': openRename('person', t.dataset.id); break;
+      case 'save-rename': {
+        const pk = S.pick || {};
+        const it = pk.rename === 'acc' ? accById(pk.id) : personById(pk.id);
+        if (!it) { closeSheet(); return toast('That is no longer there'); }
+        const name = readText('rName', 24);
+        if (!name) return toast('Type a name');
+        if (NAME_BAD.test(name)) return toast('A name can’t contain &lt; or &gt;');
+        const was = it.name;
+        it.name = name;
+        if (!save()) { it.name = was; return toast('Could not save'); }
+        closeSheet(); render(); toast(`Now called <b>${esc(name)}</b>`);
+        break;
+      }
+      case 'archive-person': {
+        const per = personById(t.dataset.id); if (!per) return;
+        /* Same rule as an account: putting someone away must not quietly change what is owed.
+           Ledger.everyone() filters archived people, so an unsettled balance would simply
+           stop being shown while still being true. */
+        /* Guard on GROSS exposure, never on the net. Owing each other ₹5,000 nets to zero
+           while two real debts are still open, and archiving on the net alone hid both —
+           the money owed TO them disappearing completely, since parked() only walks 'out'.
+           Undecided money counts for the same reason: it sits outside the net on purpose. */
+        const st = Ledger.withPerson(per.id, book());
+        if (openWith(per.id) !== 0) {
+          const bits = [];
+          if (st.theyOwe) bits.push(esc(moneyP(st.theyOwe)) + ' they owe you');
+          if (st.youOwe) bits.push(esc(moneyP(st.youOwe)) + ' you owe them');
+          if (st.undecidedOut + st.undecidedIn) bits.push(esc(moneyP(st.undecidedOut + st.undecidedIn)) + ' undecided');
+          return toast(`Still open between you: ${bits.join(' · ')} — settle that first`);
+        }
+        per.archived = true;
+        if (!save()) { per.archived = false; return toast('Could not save'); }
+        closeSheet(); S.view = 'family'; render();
+        toast(`${esc(per.name)} put away — nothing was deleted`);
+        break;
+      }
+
+      case 'unarchive-acc': {
+        const acc = accById(t.dataset.id); if (!acc || !acc.archived) break;
+        acc.archived = false;
+        if (!save()) { acc.archived = true; return toast('Could not save'); }
+        render(); toast(`${esc(acc.name)} is back`);
+        break;
+      }
+      case 'unarchive-person': {
+        const per = personById(t.dataset.id); if (!per || !per.archived) break;
+        per.archived = false;
+        if (!save()) { per.archived = true; return toast('Could not save'); }
+        render(); toast(`${esc(per.name)} is back`);
+        break;
+      }
+
+      case 'open-led': openLedgerEntry(t.dataset.id); break;
+      case 'edit-led': openLedgerEdit(t.dataset.id); break;
+
+      case 'void-led': {
+        const en = DB.ledger.filter(l => l.id === t.dataset.id)[0];
+        if (!en || en.voided) break;
+        /* Striking out something a repayment already points at would strand that repayment:
+           a repay entry never enters the net on its own — its whole effect is the reduction
+           of what it settles — so the money that came back would silently vanish. */
+        if (Ledger.settledAgainst(en.id, book()) > 0) {
+          return toast('Something has already been paid back against this — strike that out first');
+        }
+        /* Its own settles have to go with it — a struck-out repayment discharges nothing,
+           and leaving them behind lets sanitise() silently delete them on the next load.
+           They are parked ON the entry so putting it back does not depend on anything held
+           in memory. Its companion expense needs no handling at all: all() already stops
+           counting an expense whose ledger entry is struck out. */
+        const keptSettles = en.settles;
+        en.voided = true;
+        en.settles = [];
+        en.wasSettles = keptSettles;
+        // Striking out a repayment can revive a debt with someone already put away, and money
+        // you owe an archived person shows up on no screen at all.
+        const revived = unarchiveIfOwed(en.person);
+
+        if (!save()) {
+          en.voided = false; en.settles = keptSettles; delete en.wasSettles;
+          if (revived) { const p = personById(en.person); if (p) p.archived = true; }
+          return toast('Could not save');
+        }
+        S.lastVoided = en.id;
+        closeSheet(); render(true);
+        toast(revived
+          ? `Struck out — ${esc((personById(en.person) || {}).name || 'they')} is back, because money is open again`
+          : 'Struck out — it stays in the book, but counts for nothing', { act: 'unvoid', label: 'Undo' });
+        break;
+      }
+      case 'unvoid':
+      case 'unvoid-led': {
+        const id = t.dataset.id || S.lastVoided;
+        const en = id && DB.ledger.filter(l => l.id === id)[0];
+        if (!en || !en.voided) { hideToast(); break; }
+
+        /* Putting a repayment back has to re-check what it claims to discharge: its target
+           may have been struck out or shrunk in the meantime, and re-attaching a stale claim
+           is how one debt gets paid twice. Anything that no longer fits is simply not
+           restored — the money stays visible as the entry's own amount. The claims come off
+           the record itself, so this works just as well a week and a reload later. */
+        const wasVoid = en.voided, wasSettles = en.settles, parked = en.wasSettles || [];
+        en.voided = false;
+        // Each claim is checked against its target's remaining room AND against what is left
+        // of this entry itself. The per-target check alone cannot catch a claim that outgrew
+        // the entry that makes it — an entry can shrink while it is struck out.
+        let budgetLeft = en.paise;
+        en.settles = parked.filter(s => {
+          const target = DB.ledger.filter(x => x.id === s.id)[0];
+          // Ledger.owes() matters as much as the rest: while this was struck out, its target
+          // could have been changed into a gift, and a repayment discharging a gift pays off
+          // nothing while still counting for nothing itself — the money simply disappears.
+          const ok = target && !target.voided && Ledger.owes(target)
+                 && target.person === en.person && target.dir !== en.dir
+                 && s.paise <= target.paise - Ledger.settledAgainst(target.id, book())
+                 && s.paise <= budgetLeft;
+          if (ok) budgetLeft -= s.paise;
+          return ok;
+        });
+        delete en.wasSettles;
+
+        if (!save()) {
+          en.voided = wasVoid; en.settles = wasSettles; en.wasSettles = parked;
+          return toast('Could not save');
+        }
+        const lostSettles = parked.length !== en.settles.length;
+        if (S.lastVoided === en.id) S.lastVoided = null;   // only clear the one we just used
+        closeSheet(); render(true); hideToast();
+        toast(lostSettles
+          ? 'Put back — but what it used to pay off has changed, so check the amounts'
+          : 'Put back');
+        break;
+      }
+
+      case 'save-led-edit': {
+        const pk = S.pick || {};
+        const en = DB.ledger.filter(l => l.id === pk.edit)[0];
+        if (!en) { closeSheet(); return toast('That entry is no longer there'); }
+        // Editing a struck-out row would leave its parked claims describing an amount that no
+        // longer exists, and Undo restores those claims — a ₹300 repayment discharging ₹3,000.
+        if (en.voided) { closeSheet(); return toast('Put it back first, then change it'); }
+        const paise = readPaise('eAmt');
+        if (paise == null) return toast('Type an amount');
+        const paidBack = Ledger.settledAgainst(en.id, book());
+        // Shrinking a debt below what has already been repaid would make `remaining()` clamp
+        // at zero and quietly lose the difference.
+        if (paise < paidBack) {
+          return toast(`${esc(moneyP(paidBack))} has already come back against this — it can't go below that`);
+        }
+        const nextKind = pk.lkind || en.kind;
+        /* Changing what an entry IS, while other entries are pointing at it as a debt, would
+           leave those repayments discharging something that is no longer a debt. */
+        if (paidBack > 0 && nextKind !== en.kind) {
+          return toast('Something has already been paid back against this, so what it is can’t change now');
+        }
+
+        /* The date only becomes a fresh noon stamp if the DAY actually changed. Re-stamping
+           on every edit moves an entry backwards to noon, which can drop it below its
+           account's anchor — so correcting a typo in a note would make ₹5,000 vanish from
+           that balance. The expense editor already guards this; this one did not. */
+        const dStr = ($('#eDate') && $('#eDate').value) || dayKey(en.ts);
+        let ts = en.ts;
+        if (dStr !== dayKey(en.ts)) {
+          const parts = dStr.split('-').map(Number);
+          const dt = new Date(parts[0], parts[1] - 1, parts[2]); dt.setHours(12, 0, 0, 0);
+          if (isFinite(dt.getTime())) ts = dt.getTime();
+        }
+
+        /* Settlements belong to the amount and kind that produced them, so an edit has to
+           rebuild them rather than carry them across: a repayment edited from ₹3,000 to ₹300
+           that keeps claiming to have settled ₹3,000 understates the debt by ₹2,700. */
+        let nextSettles = [];
+        if (nextKind === 'repay') {
+          let left = paise;
+          const want = en.dir === 'in' ? 'out' : 'in';
+          DB.ledger.filter(l => !l.voided && l.id !== en.id && l.person === en.person
+                                && l.dir === want && Ledger.owes(l))
+            .sort((x, y) => x.ts - y.ts)
+            .forEach(l => {
+              if (left <= 0) return;
+              // measured against a book without this entry, so its old claim doesn't count
+              const others = book();
+              others.ledger = others.ledger.filter(x => x.id !== en.id);
+              const openP = Ledger.remaining(l, others);
+              if (openP <= 0) return;
+              const take = Math.min(openP, left);
+              nextSettles.push({ id: l.id, paise: take });
+              left -= take;
+            });
+          if (!nextSettles.length) {
+            return toast('There is nothing open for this to pay back — leave it as "Not decided" if you’re not sure');
+          }
+          /* save-lend splits an overpayment into a second entry so the extra rupees stay
+             visible. This door has to behave identically, or the same ₹2,000 that survives
+             when you record it vanishes when you correct it. Refusing is the honest, simple
+             version here: the user is editing, so they can just enter the amount that fits. */
+          if (left > 0) {
+            const fits = paise - left;
+            return toast(`Only ${esc(moneyP(fits))} is open to pay back — enter that, and record the extra ${esc(moneyP(left))} separately`);
+          }
+        }
+
+        const before = Object.assign({}, en);
+        const next = normaliseLedger(Object.assign({}, en, {
+          paise: paise, note: readText('eNote', 60), kind: nextKind,
+          acc: pk.acc !== undefined ? pk.acc : en.acc,
+          ts: ts,
+          settles: nextSettles,
+          // `fulfilled` is a fund-specific discharge; it must not survive becoming a loan.
+          fulfilled: nextKind === 'fund' ? en.fulfilled : false,
+          tsSuspect: false,               // the user has just stated the date themselves
+        }));
+        if (!next) return toast('That doesn’t look right');
+        const idx = DB.ledger.indexOf(en);
+        DB.ledger[idx] = next;
+        // An edit can revive a debt with someone already put away — same rule as striking out.
+        const revived = unarchiveIfOwed(next.person);
+
+        /* Keep the "counted as my spending" copy in step. It is the same rupees seen from
+           the other side, so an edit that moved one and not the other would put ₹2,000 in
+           your categories and ₹5,000 in the ledger for a single event. If the entry stopped
+           being a fulfilled fund, the copy has no reason to exist any more. */
+        const cIdx = DB.expenses.findIndex(e => e.fromLed === en.id);
+        const cBefore = cIdx >= 0 ? DB.expenses[cIdx] : null;
+        if (cBefore) {
+          if (next.kind === 'fund' && next.fulfilled) {
+            const synced = normaliseExpense(Object.assign({}, cBefore, {
+              amount: next.paise / 100, note: next.note || cBefore.note, ts: next.ts,
+            }));
+            // If the copy will not pass its own gate, the pair cannot both be updated — and
+            // updating only one is the exact desync this sync exists to prevent. Refuse the
+            // whole edit and put the entry back.
+            if (!synced) {
+              DB.ledger[idx] = before;
+              return toast('That change can’t be applied to the spending it is counted as');
+            }
+            DB.expenses[cIdx] = synced;
+          } else {
+            DB.expenses.splice(cIdx, 1);
+          }
+        }
+
+        if (!save()) {
+          DB.ledger[idx] = before;
+          if (revived) { const p = personById(next.person); if (p) p.archived = true; }
+          if (cBefore) { if (cIdx < DB.expenses.length && DB.expenses[cIdx] && DB.expenses[cIdx].fromLed === en.id) DB.expenses[cIdx] = cBefore; else DB.expenses.splice(cIdx, 0, cBefore); }
+          return toast('Could not save — storage is full or blocked');
+        }
+        closeSheet(); render();
+        toast(`Changed to <b>${esc(moneyP(next.paise))}</b>`);
+        break;
+      }
+      case 'fix-led-date': openLedgerEdit(t.dataset.id); break;
 
       case 'lend': openLend(t.dataset.id, t.dataset.v); break;
       case 'save-lend': {
         const pk = S.pick || {}, paise = readPaise('lAmt');
         if (paise == null) return toast('Type an amount');
         const lkind = pk.lkind || 'unclear';
+        // Ticking the box and picking nothing used to save quietly and mention it afterwards,
+        // by which time the sheet was gone and the expense was not written.
+        const mineTicked = !!($('#lMine') && $('#lMine').checked);
+        if (mineTicked && !pk.lcat) {
+          return toast('Pick a category for the spending, or untick that box');
+        }
+        /* Ticked, category chosen, but the kind was moved back off "For something" — the
+           request is coherent and used to be dropped in silence, with a toast afterwards
+           telling the user to pick a category they had already picked. Say it before saving,
+           while the sheet is still open and the chips are still there to change. */
+        if (mineTicked && pk.lcat && lkind !== 'fund') {
+          return toast('Only "For something" can count as your spending — change that, or untick the box');
+        }
 
         /* A repayment has to actually discharge something, oldest debt first. Without
            this the net comes out right while "still out there" keeps listing money that
            already came back — a confident wrong number, which is the one thing here
            that must never happen. */
-        let settles = [];
+        let settles = [], over = 0;
         if (lkind === 'repay') {
           let left = paise;
           const want = pk.dir === 'in' ? 'out' : 'in';
-          DB.ledger.filter(l => !l.voided && l.person === pk.person && l.dir === want && Ledger.OBLIGATION[l.kind])
+          DB.ledger.filter(l => !l.voided && l.person === pk.person && l.dir === want && Ledger.owes(l))
             .sort((x, y) => x.ts - y.ts)
             .forEach(l => {
               if (left <= 0) return;
@@ -3327,17 +4184,66 @@
               settles.push({ id: l.id, paise: take });
               left -= take;
             });
-          if (!settles.length) return toast('There is nothing open to pay back — record it as a gift or a loan instead');
+          // Not "record it as a gift or a loan" — this app's whole stance is that money does
+          // not have to be labelled at the moment it moves.
+          if (!settles.length) return toast('There is nothing open to pay back — leave it as "Not decided" if you’re not sure');
+          /* Anything left over is not a repayment, because there was nothing left to repay.
+             A repay entry never enters the net itself — its whole effect is the reduction of
+             what it settles — so a remainder swallowed here is real money that silently
+             disappears: pay back ₹5,000 against a ₹3,000 debt and the app says "all settled"
+             while ₹2,000 is now owed the other way. Record it instead. */
+          over = left;
         }
+        const settled = paise - over;
 
-        const en = normaliseLedger({ dir: pk.dir, person: pk.person, paise: paise,
+        const en = normaliseLedger({ dir: pk.dir, person: pk.person, paise: settled,
           kind: lkind, note: readText('lNote', 60), settles: settles,
           acc: pk.acc || null, ts: Date.now(), enteredTs: Date.now() });
         if (!en) return toast('That doesn’t look right');
-        DB.ledger.push(en);
-        if (!save()) { DB.ledger.pop(); return toast('Could not save — storage is full or blocked'); }
+        DB.ledger.push(en); noLongerSample();
+
+        let extra = null;
+        if (over > 0) {
+          // "Not decided" is a real answer in this app, and it is the honest home for money
+          // that moved without a debt to attach it to. It stays visible and out of the net.
+          extra = normaliseLedger({ dir: pk.dir, person: pk.person, paise: over,
+            kind: 'unclear', note: 'More than was owed', settles: [],
+            acc: pk.acc || null, ts: Date.now(), enteredTs: Date.now() });
+          if (extra) DB.ledger.push(extra);
+        }
+
+        /* "I'll give you the money, you pay for it." The rupees already left the account via
+           the ledger entry above, so this copy carries acc:null — the invariant being that
+           for any real rupee exactly one record deducts it from a balance. It is an ordinary
+           local expense with no link back: a classification, not a second withdrawal. */
+        let mine = null;
+        if (mineTicked && pk.lcat && en.kind === 'fund') {
+          mine = normaliseExpense({ id: uid(), amount: settled / 100, catId: pk.lcat,
+            note: readText('lNote', 60), ts: Date.now(), acc: null, fromLed: en.id });
+          if (mine) {
+            DB.expenses.push(mine);
+            /* Counting it as your own spending IS the discharge. Without this the same
+               ₹2,000 is charged twice — once in your categories, and once again as a debt
+               your sister is still shown to owe you.
+               Gated on `fund` deliberately: `fulfilled` is a fund-specific discharge, and
+               letting it land on a loan would cancel a real debt the moment someone tapped
+               a category chip. */
+            en.fulfilled = true;
+          }
+        }
+
+        if (!save()) {
+          if (mine) DB.expenses.pop();
+          // Keep it, like every other writer: memory-only is announced, and discarding what
+          // someone just recorded about family money is worse than not persisting it.
+          closeSheet(); render();
+          return toast(unsavedNote());
+        }
         closeSheet(); render();
-        toast(`${pk.dir === 'out' ? 'You gave' : 'You got'} <b>${esc(moneyP(paise))}</b>`);
+        toast(over > 0
+          ? `Paid back <b>${esc(moneyP(settled))}</b> · ${esc(moneyP(over))} more than was owed, left undecided`
+          : `${pk.dir === 'out' ? 'You gave' : 'You got'} <b>${esc(moneyP(paise))}</b>`
+            + (mine ? ` · also in ${esc(catOf(mine.catId).name)}` : ''));
         break;
       }
     }

@@ -3,7 +3,7 @@
    the safety net for tunnels, planes and dead signal. */
 // Bump this on release. Old caches are deleted on activate, so a stale shell can
 // never outlive a deploy even if a browser hangs on to the previous worker.
-const CACHE = 'hisaab-v1.3';
+const CACHE = 'hisaab-v1.4';
 const SHELL = [
   './', './index.html', './app.css', './ledger.js', './app.js',
   './icon.svg', './icon-maskable.svg', './manifest.webmanifest',
@@ -39,6 +39,14 @@ self.addEventListener('fetch', e => {
         }
         return res;
       })
-      .catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
+      /* The index.html fallback is for NAVIGATIONS only. Handing the HTML shell back for a
+         missing script means it parses as garbage and the global it defines silently never
+         exists — which is far harder to diagnose than a script that plainly failed to load,
+         and used to leave the app's first screen blank with nothing to explain it. */
+      .catch(() => caches.match(req).then(hit => {
+        if (hit) return hit;
+        if (req.mode === 'navigate') return caches.match('./index.html');
+        return Response.error();
+      }))
   );
 });
